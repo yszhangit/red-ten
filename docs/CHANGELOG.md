@@ -30,6 +30,7 @@
 - 错误信息更具体：空回答会说明是否被"思考"占满；超时会指出 `timeout_s`；HTTP 错误带上服务器的说明（如上下文长度不足、模型名不存在）。
 - 识别 Gemma 4 的思考格式（`<|channel>thought … <channel|>`），不会把思考内容里的数字当成出牌编号，并在调试面板中显示。
 - `gemma4-e4b` 的默认配置改为 LM Studio（端口 1234）。
+- 实测 Gemma 4 E4B 在 LM Studio 上默认开启思考：120 个 token 的回答额度里 117 个用于思考，没有给出答案。LM Studio 的 OpenAI 兼容接口没有关闭思考的参数，因此新增配置项 `"api": "lmstudio"`，改用 LM Studio 自带接口（`/api/v1/chat`）并发送 `"reasoning": "off"`。`gemma4-e4b` 默认使用这种方式，超时放宽到 60 秒。
 
 ### 调试模式：显示 AI 手牌和模型思考
 

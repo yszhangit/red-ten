@@ -424,3 +424,101 @@ def test_client_wraps_connection_errors():
 
     with pytest.raises(LLMError):
         chat_completion(cfg(), [{"role": "user", "content": "hi"}], opener=opener)
+
+
+# ── LM Studio's native API (the only documented way to switch thinking off) ───
+
+def _lmstudio_cfg(**kw):
+    return cfg(api="lmstudio", base_url="http://localhost:1234/api/v1/",
+               extra_body={"reasoning": "off"}, **kw)
+
+
+def test_lmstudio_request_uses_the_native_chat_endpoint_and_fields():
+    seen = {}
+
+    def opener(req, timeout):
+        seen["url"] = req.full_url
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        payload = {"output": [{"type": "message", "content": '{"move": 1}'}], "stats": {}}
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    c = _lmstudio_cfg(temperature=0.2, max_tokens=64)
+    chat_completion(c, [{"role": "system", "content": "规则"},
+                        {"role": "user", "content": "手牌"}], opener=opener)
+
+    body = seen["body"]
+    assert seen["url"] == "http://localhost:1234/api/v1/chat"
+    assert body["model"] == "fake-model"
+    assert body["system_prompt"] == "规则"
+    assert body["input"] == "手牌"
+    assert body["max_output_tokens"] == 64
+    assert body["temperature"] == 0.2
+    assert body["reasoning"] == "off"
+    assert body["store"] is False and body["stream"] is False
+    assert "messages" not in body and "max_tokens" not in body
+
+
+def test_lmstudio_reply_separates_message_reasoning_and_token_counts():
+    payload = {"output": [{"type": "reasoning", "content": "先想一想"},
+                          {"type": "message", "content": '{"move": 2}'}],
+               "stats": {"input_tokens": 2796, "total_output_tokens": 40,
+                         "reasoning_output_tokens": 25}}
+
+    def opener(req, timeout):
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    out = chat_completion(_lmstudio_cfg(), [{"role": "user", "content": "手牌"}], opener=opener)
+
+    assert out == '{"move": 2}'
+    assert out.reasoning == "先想一想"
+    assert out.usage["prompt_tokens"] == 2796
+    assert out.usage["completion_tokens"] == 40
+
+
+def test_lmstudio_reply_with_only_reasoning_is_an_error_that_keeps_it():
+    payload = {"output": [{"type": "reasoning", "content": "想了又想"}],
+               "stats": {"input_tokens": 2796, "total_output_tokens": 120}}
+
+    def opener(req, timeout):
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    with pytest.raises(LLMError) as e:
+        chat_completion(_lmstudio_cfg(), [{"role": "user", "content": "手牌"}], opener=opener)
+    assert e.value.reasoning == "想了又想"
+    assert "completion_tokens=120" in str(e.value)
+
+
+def test_lmstudio_retry_keeps_the_original_question_in_the_input():
+    """The native API takes one input text, so a retry must carry the table
+    view, the rejected answer and the correction together."""
+    seen = {}
+
+    def opener(req, timeout):
+        seen["body"] = json.loads(req.data.decode("utf-8"))
+        payload = {"output": [{"type": "message", "content": '{"move": 1}'}]}
+        return _FakeResponse(json.dumps(payload).encode("utf-8"))
+
+    chat_completion(_lmstudio_cfg(), [
+        {"role": "system", "content": "规则"},
+        {"role": "user", "content": "手牌在此"},
+        {"role": "assistant", "content": "我出对三"},
+        {"role": "user", "content": "回答无效"},
+    ], opener=opener)
+
+    text = seen["body"]["input"]
+    assert text.index("手牌在此") < text.index("我出对三") < text.index("回答无效")
+
+
+def test_config_rejects_an_unknown_api(tmp_path):
+    path = tmp_path / "models.json"
+    path.write_text(json.dumps({"models": {"m": {
+        "base_url": "http://x/v1", "model": "m", "api": "telepathy"}}}), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_models(str(path))
+
+
+def test_shipped_gemma_entry_switches_thinking_off():
+    models, _ = load_models(os.path.join(REPO, "config", "llm_models.json"))
+    gemma = models["gemma4-e4b"]
+    assert gemma.api == "lmstudio"
+    assert gemma.extra_body.get("reasoning") == "off"

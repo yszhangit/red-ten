@@ -11,12 +11,14 @@
       "note": "Served by mlx_lm.server. Thinking is switched off: with it on, the reply budget is spent on reasoning and no answer comes back."
     },
     "gemma4-e4b": {
-      "base_url": "http://localhost:1234/v1",
+      "api": "lmstudio",
+      "base_url": "http://localhost:1234/api/v1",
       "model": "google/gemma-4-e4b",
       "temperature": 0.3,
       "max_tokens": 120,
-      "timeout_s": 30,
-      "note": "Served by LM Studio (default port 1234). 'model' must match an id listed by http://localhost:1234/v1/models. In LM Studio, load the model with a context length of at least 8192 (an opening hand needs about 4000 tokens) and switch 'Enable Thinking' off, or raise max_tokens. Check with: python scripts/llm_smoke.py --model gemma4-e4b --probe"
+      "timeout_s": 60,
+      "extra_body": {"reasoning": "off"},
+      "note": "Served by LM Studio 0.4 or newer, through its native API, because that is where thinking can be switched off (reasoning: off). With thinking on, Gemma spent the whole reply on reasoning and gave no answer. 'model' must match an id LM Studio lists. Check with: python scripts/llm_smoke.py --model gemma4-e4b --probe"
     }
   }
 }

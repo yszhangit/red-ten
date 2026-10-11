@@ -279,6 +279,20 @@ mlx_lm.server --model mlx-community/Qwen3.5-9B-4bit --port 8080
 every request (Qwen needs its "thinking" switched off there). Set the
 `REDTEN_LLM_CONFIG` environment variable to use a different file.
 
+Small models that "think" before answering must have thinking switched off, or
+the reply limit is used up before any answer appears. How to do that depends on
+the server:
+
+| Server | Config entry |
+|---|---|
+| `mlx_lm.server` | `"extra_body": {"chat_template_kwargs": {"enable_thinking": false}}` |
+| LM Studio (0.4 or newer) | `"api": "lmstudio"`, `"base_url": "http://localhost:1234/api/v1"`, `"extra_body": {"reasoning": "off"}` |
+
+`"api": "lmstudio"` makes the game use LM Studio's own API instead of its
+OpenAI-style one, because only that one accepts the `reasoning` setting. If your
+LM Studio is older, keep the default API (`base_url` ending in `/v1`) and switch
+the model's reasoning toggle off inside LM Studio instead.
+
 **3. Pick it in the UI**: on `/play` choose "LLM AI" for the empty seats, or on
 `/training` choose "LLM AI" and a model per seat.
 
@@ -314,8 +328,9 @@ Usual causes, and what the log line looks like:
 | `reply 1 of 2 not usable … '<text>'` | The model answered, but not with a number from the list | Look at the text; the skill or `max_tokens` may need changing |
 
 LM Studio notes: the server listens on port 1234 by default; Gemma 4 has
-"Enable Thinking" on by default; and models are often loaded with a 4096-token
-context unless you raise it.
+thinking on by default (the shipped `gemma4-e4b` entry switches it off per
+request); and models are often loaded with a 4096-token context unless you
+raise it.
 
 ### Debug mode: watch how the AI plays
 

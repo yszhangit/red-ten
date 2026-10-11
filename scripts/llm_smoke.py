@@ -42,10 +42,17 @@ def probe(cfg: ModelConfig, seat: int, seed: int, explain: bool) -> None:
     url = cfg.base_url.rstrip("/") + "/models"
     try:
         with urllib.request.urlopen(url, timeout=10) as resp:
-            ids = [m.get("id") for m in json.loads(resp.read().decode("utf-8")).get("data", [])]
-        print(f"models offered by {url}: {ids}")
-        if cfg.model not in ids:
-            print(f'!! "{cfg.model}" (from config/llm_models.json) is not in that list')
+            listing = json.loads(resp.read().decode("utf-8"))
+        # OpenAI-style servers answer {"data": [{"id": ...}]}; LM Studio's
+        # native API answers {"models": [{"key": ...}]}.
+        entries = listing.get("data") or listing.get("models") or []
+        ids = [m.get("id") or m.get("key") for m in entries if isinstance(m, dict)]
+        if ids:
+            print(f"models offered by {url}: {ids}")
+            if cfg.model not in ids:
+                print(f'!! "{cfg.model}" (from config/llm_models.json) is not in that list')
+        else:
+            print(f"model list at {url} not understood: {json.dumps(listing)[:300]}")
     except Exception as e:
         print(f"could not list models at {url}: {type(e).__name__}: {e}")
 

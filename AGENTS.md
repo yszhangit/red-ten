@@ -68,6 +68,8 @@ Run these from the repo root with the virtual environment active
   Handle a difference in `src/llm_client.py` / `src/llm_player.py` with a test built from
   the real raw reply; get that reply with `python scripts/llm_smoke.py --model <name> --probe`.
 - LLM activity goes to the `redten.llm` logger (stdout), not `print`.
+- A server that needs a different request format gets an entry in `APIS` in
+  `src/llm_client.py`, selected by `"api"` in the config. Do not branch on model names.
 
 ## Brownfield guardrails
 
