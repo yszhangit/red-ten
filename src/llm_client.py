@@ -19,6 +19,18 @@ DEFAULT_CONFIG_PATH = os.path.join(_REPO, "config", "llm_models.json")
 
 class LLMError(Exception):
     """The model server could not be reached or returned nothing usable."""
+    reasoning: str = ""      # thinking tokens received before the failure, if any
+
+
+class ChatReply(str):
+    """The reply text, plus any separate reasoning ("thinking") tokens the
+    server returned alongside it."""
+    reasoning: str
+
+    def __new__(cls, content: str, reasoning: str = "") -> "ChatReply":
+        obj = super().__new__(cls, content)
+        obj.reasoning = reasoning
+        return obj
 
 
 @dataclass
@@ -67,7 +79,7 @@ def get_model(name: Optional[str] = None, path: Optional[str] = None) -> ModelCo
 
 
 def chat_completion(cfg: ModelConfig, messages: list[dict],
-                    opener: Callable[..., Any] = urllib.request.urlopen) -> str:
+                    opener: Callable[..., Any] = urllib.request.urlopen) -> ChatReply:
     """POST one chat request and return the reply text. Raises LLMError."""
     body: dict[str, Any] = {
         "model": cfg.model,
@@ -90,11 +102,15 @@ def chat_completion(cfg: ModelConfig, messages: list[dict],
         with opener(req, timeout=cfg.timeout_s) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         choice = data["choices"][0]
-        content = choice["message"].get("content")
-    except (OSError, ValueError, KeyError, IndexError, TypeError) as e:
+        message = choice["message"]
+        content = message.get("content")
+        reasoning = str(message.get("reasoning") or message.get("reasoning_content") or "")
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
         raise LLMError(f"{cfg.name}: {type(e).__name__}: {e}") from e
 
     if not content or not content.strip():
-        raise LLMError(f"{cfg.name}: empty reply "
+        err = LLMError(f"{cfg.name}: empty reply "
                        f"(finish_reason={choice.get('finish_reason')})")
-    return str(content)
+        err.reasoning = reasoning
+        raise err
+    return ChatReply(str(content), reasoning)

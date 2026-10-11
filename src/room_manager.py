@@ -202,9 +202,13 @@ class GameRoom:
     """
 
     def __init__(self, room_code: str, ai_tier: str = "search",
-                 n_samples: int = 12, config: Optional[BattleConfig] = None):
+                 n_samples: int = 12, config: Optional[BattleConfig] = None,
+                 debug: bool = False):
         self.room_code = room_code
         self.config = config
+        # Debug mode: human players see AI hands and each LLM seat's reasoning.
+        self.debug = debug
+        self.thoughts: dict[int, dict] = {}   # latest decision report per seat
         self.ai_tier = ai_tier
         self.status = "lobby"   # lobby | running | done
         self.seats: list[SeatController] = []
@@ -234,6 +238,13 @@ class GameRoom:
                 seat._room = self
                 self.seats.append(seat)
 
+        if debug:
+            for seat in self.seats:
+                ai = seat.ai_player
+                if hasattr(ai, "on_decision"):       # LLM seats
+                    setattr(ai, "on_decision", self.broadcast_thought)
+                    setattr(ai, "explain", True)
+
     # ── broadcasting ──────────────────────────────────────────────────────────
 
     def broadcast(self, data: dict, only_seat: Optional[int] = None) -> None:
@@ -252,12 +263,26 @@ class GameRoom:
             pass   # don't return — spectators may still need the event
         else:
             all_humans_done = all(event.snapshot.finished[p] for p in human_seats)
-            ai_seats = {i for i in range(6) if not self.seats[i].is_human} if all_humans_done else None
+            ai_seats = self.reveal_seats(all_humans_done)
             for i in human_seats:
                 self.seats[i].send({"type": "game_event", "event": ser_event_pov(event, i, ai_seats)})
 
         # Broadcast full (non-POV) event to spectators
         self._spectator_send({"type": "game_event", "event": ser_event(event)})
+
+    def reveal_seats(self, all_humans_done: bool) -> Optional[set[int]]:
+        """AI seats whose hands human players may see: all of them in debug
+        mode, otherwise only once every human has finished the hand."""
+        if self.debug or all_humans_done:
+            return {i for i in range(6) if not self.seats[i].is_human}
+        return None
+
+    def broadcast_thought(self, report: dict) -> None:
+        """Debug mode only: tell human players what an AI seat just decided and why."""
+        if not self.debug:
+            return
+        self.thoughts[report["seat"]] = report
+        self.broadcast({"type": "ai_thought", **report})
 
     def room_state_msg(self, pov_seat: int) -> dict:
         seats_info = []
@@ -276,6 +301,7 @@ class GameRoom:
             "pov_seat": pov_seat,
             "seats": seats_info,
             "status": self.status,
+            "debug": self.debug,
         }
         if self.config is not None:
             result["is_battle"] = True
@@ -403,9 +429,9 @@ class RoomManager:
     def __init__(self):
         self._rooms: dict[str, GameRoom] = {}
 
-    def create(self, ai_tier: str = "search") -> GameRoom:
+    def create(self, ai_tier: str = "search", debug: bool = False) -> GameRoom:
         code = self._fresh_code()
-        room = GameRoom(code, ai_tier=ai_tier)
+        room = GameRoom(code, ai_tier=ai_tier, debug=debug)
         self._rooms[code] = room
         return room
 

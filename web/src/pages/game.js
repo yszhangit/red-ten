@@ -18,6 +18,9 @@ let selectedCardIdxs = new Set();
 let _sendWS = null;
 let _myRoom = null;
 let _showScreen = null;
+let debugMode = false;        // debug room: AI hands and LLM reasoning are shown
+let thoughts = {};            // seat → latest decision report from an LLM seat
+let pinnedThoughtSeat = null; // seat whose thought panel was clicked open
 
 const CCW_ORDER = [0, 5, 4, 3, 2, 1];  // seats in P1→P6 display order
 
@@ -50,8 +53,11 @@ export function init(config) {
   _sendWS   = config.sendWS;
   _myRoom   = config.roomCode;
   _showScreen = config.showScreen;
+  debugMode = !!config.debug;
 
   // Reset state
+  thoughts = {};
+  pinnedThoughtSeat = null;
   gameSnap = null;
   myTurnMoves = null;
   lastActor = null;
@@ -63,6 +69,7 @@ export function init(config) {
 
   buildGSeats();
   buildGTrickZone();
+  buildDebugUi();
   hideMoGongDisplay();
   hideHandEndOverlay();
   document.getElementById('pre-game-overlay').style.display = 'none';
@@ -175,7 +182,10 @@ function buildGSeats() {
     seat.innerHTML = `
       <div class="gseat-name">
         <span class="sname" id="gsname-${p}">P${p}${p===mySeat?' (You)':''}</span>
-        <span id="gsbadge-${p}"></span>
+        <span>
+          <span class="thought-btn" id="gsthought-${p}" title="AI 的思考">💭</span>
+          <span id="gsbadge-${p}"></span>
+        </span>
       </div>
       <div class="gseat-score">
         <span id="gsc-hand-${p}">hand 0</span>
@@ -184,7 +194,121 @@ function buildGSeats() {
       <div class="gseat-cards" id="ghand-${p}"></div>
       <div class="gseat-count" id="gcnt-${p}"></div>`;
     el.appendChild(seat);
+
+    const tb = seat.querySelector('.thought-btn');
+    tb.addEventListener('mouseenter', () => showThoughtPanel(p));
+    tb.addEventListener('mouseleave', () => {
+      if (pinnedThoughtSeat === null) hideThoughtPanel();
+      else showThoughtPanel(pinnedThoughtSeat);
+    });
+    tb.addEventListener('click', () => {
+      pinnedThoughtSeat = pinnedThoughtSeat === p ? null : p;
+      if (pinnedThoughtSeat === null) hideThoughtPanel(); else showThoughtPanel(p);
+    });
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Debug mode: revealed AI hands and the LLM thought panel
+// ═══════════════════════════════════════════════════════════════════════════
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, ch =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function buildDebugUi() {
+  const main = document.getElementById('gmain');
+  let tag = document.getElementById('ai-debug-tag');
+  if (!tag) {
+    tag = document.createElement('div');
+    tag.id = 'ai-debug-tag';
+    tag.textContent = '调试模式 · AI 手牌可见 · 点 💭 看模型思考';
+    main.appendChild(tag);
+  }
+  tag.style.display = debugMode ? 'block' : 'none';
+
+  let panel = document.getElementById('thought-panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'thought-panel';
+    main.appendChild(panel);
+  }
+  panel.style.display = 'none';
+}
+
+// A revealed hand as one chip per rank, e.g. "K×2"; ♥10 gets its own chip.
+function miniHandHtml(hand) {
+  const groups = new Map();
+  for (const c of hand) {
+    const key = c.rt ? '♥10' : c.rl;
+    const g = groups.get(key) || { n: 0, c };
+    g.n += 1;
+    groups.set(key, g);
+  }
+  const order = k => k === '♥10' ? 10.5 : (RANK_SORT[k] ?? 0);
+  return [...groups.entries()]
+    .sort((a, b) => order(a[0]) - order(b[0]))
+    .map(([k, g]) => {
+      let cls = 'mh-chip';
+      if (g.c.rt) cls += ' redten';
+      else if (g.c.bj || g.c.sj) cls += ' joker';
+      else if (g.c.sv > 0) cls += ' scoring';
+      return `<span class="${cls}">${esc(k)}${g.n > 1 ? `<small>×${g.n}</small>` : ''}</span>`;
+    }).join('');
+}
+
+function thoughtPanelHtml(seat, t) {
+  const secs = (t.latency_ms / 1000).toFixed(1);
+  let h = `<div class="tp-head"><b>${pLabel(seat)}</b> · ${esc(t.model)} · ${secs}s
+    <span class="tp-close" id="tp-close">×</span></div>`;
+  if (t.fallback) {
+    h += `<div class="tp-warn">模型没有给出有效回答，这一手由规则 AI 代出。${esc(t.error)}</div>`;
+  }
+  const num = t.choice ? `（第 ${t.choice} 项，共 ${t.n_options} 项）` : '';
+  h += `<div class="tp-row"><span class="tp-label">出牌</span> ${esc(t.move)} ${num}</div>`;
+  if (t.reason) {
+    h += `<div class="tp-row"><span class="tp-label">模型的说明</span> ${esc(t.reason)}</div>`;
+  }
+  if (t.thinking) {
+    h += `<div class="tp-label">思考过程（thinking tokens）</div><pre>${esc(t.thinking)}</pre>`;
+  }
+  const opts = (t.options || []).map((o, i) =>
+    `<li${i + 1 === t.choice ? ' class="chosen"' : ''}>${esc(o)}</li>`).join('');
+  h += `<details><summary>可选出牌（${t.n_options}）</summary><ol>${opts}</ol></details>`;
+  h += `<details><summary>模型看到的信息</summary><pre>${esc(t.view)}</pre></details>`;
+  const raw = (t.replies || []).map(esc).join('\n---\n');
+  if (raw) h += `<details><summary>模型的原始回答</summary><pre>${raw}</pre></details>`;
+  return h;
+}
+
+function showThoughtPanel(seat) {
+  const t = thoughts[seat];
+  const panel = document.getElementById('thought-panel');
+  if (!t || !panel) return;
+  // Keep any opened <details> sections open while the panel refreshes.
+  const open = [...panel.querySelectorAll('details')].map(d => d.open);
+  panel.innerHTML = thoughtPanelHtml(seat, t);
+  if (panel.dataset.seat === String(seat)) {
+    panel.querySelectorAll('details').forEach((d, i) => { d.open = !!open[i]; });
+  }
+  panel.dataset.seat = String(seat);
+  panel.style.display = 'block';
+  document.getElementById('tp-close').addEventListener('click', () => {
+    pinnedThoughtSeat = null;
+    hideThoughtPanel();
+  });
+}
+
+function hideThoughtPanel() {
+  const panel = document.getElementById('thought-panel');
+  if (panel) panel.style.display = 'none';
+}
+
+export function handleThought(report) {
+  thoughts[report.seat] = report;
+  const btn = document.getElementById('gsthought-' + report.seat);
+  if (btn) btn.style.display = 'inline';
+  if (pinnedThoughtSeat === report.seat) showThoughtPanel(report.seat);
 }
 
 function buildGTrickZone() {
@@ -266,7 +390,12 @@ export function renderGame() {
           el.addEventListener('click', () => toggleCard(parseInt(el.dataset.idx)));
         });
       }
+    } else if (hand.length) {
+      // The server sent this seat's cards (debug mode, or humans have finished).
+      cardsEl.classList.add('revealed');
+      cardsEl.innerHTML = miniHandHtml(hand);
     } else {
+      cardsEl.classList.remove('revealed');
       const count = snap.hcnt ? snap.hcnt[p] : hand.length;
       const shown = Math.min(count, 10);
       cardsEl.innerHTML = Array(shown).fill(backCardHtml()).join('');

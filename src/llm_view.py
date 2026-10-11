@@ -170,8 +170,10 @@ def _identity(state: GameState, p: int, i_am_red: bool, unseen_red: int) -> str:
     return "身份未知"
 
 
-def build_view(state: GameState, me: int, options: list[Option]) -> str:
-    """The per-turn message for seat `me`."""
+def build_view(state: GameState, me: int, options: list[Option],
+               explain: bool = False) -> str:
+    """The per-turn message for seat `me`. With `explain`, the model is asked
+    to write a short analysis before its choice (used by debug mode)."""
     hand = state.hands[me]
     my_status = state.player_statuses[me]
     held_red = _red_tens(hand)
@@ -231,6 +233,9 @@ def build_view(state: GameState, me: int, options: list[Option]) -> str:
     out.append("【可选出牌】")
     for i, o in enumerate(options, start=1):
         out.append(f"{i}. {o.text}")
-    out.append(f'请从 1 到 {len(options)} 中选一个编号，只输出 JSON：'
-               '{"move": 编号, "reason": "不超过20字"}')
+    if explain:
+        fmt = '{"analysis": "用两三句话说明你怎么看这手牌、为什么这样出", "move": 编号}'
+    else:
+        fmt = '{"move": 编号, "reason": "不超过20字"}'
+    out.append(f'请从 1 到 {len(options)} 中选一个编号，只输出 JSON：{fmt}')
     return "\n".join(out)

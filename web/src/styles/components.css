@@ -87,3 +87,8 @@ html, body { height: 100%; overflow: hidden; background: #165a23;
   background: #0c2c14; border: 1px solid #3a6a44; border-radius: 6px;
   color: #e1e4d7; font-size: 11px; font-family: monospace; white-space: pre-line;
   padding: 8px 14px; z-index: 300; display: none; max-width: 80vw; text-align: center; }
+
+/* ── Lobby checkbox row ───────────────────────────────────────────────────── */
+.lfield label.lcheck { display: flex; align-items: center; gap: 6px; font-size: 12px;
+  color: #e1e4d7; cursor: pointer; }
+.lfield label.lcheck input { width: auto; margin: 0; }

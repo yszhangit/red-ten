@@ -112,6 +112,7 @@ def training_status(log: str = "/tmp/selfplay_adv_search.log"):
 
 class CreateRoomReq(BaseModel):
     ai_tier: str = "search"
+    debug: bool = False      # show AI hands and LLM reasoning to the human players
 
 class JoinRoomReq(BaseModel):
     seat: int = -1
@@ -127,6 +128,7 @@ def list_rooms():
             "status":      room.status,
             "ai_tier":     room.ai_tier,
             "human_seats": sum(1 for s in room.seats if s.is_human),
+            "debug":       room.debug,
         }
         if room.config is not None:
             entry["is_battle"] = True
@@ -138,7 +140,7 @@ def list_rooms():
 
 @app.post("/api/room/create")
 def create_room(req: CreateRoomReq):
-    room = rooms.create(ai_tier=req.ai_tier)
+    room = rooms.create(ai_tier=req.ai_tier, debug=req.debug)
     return {"room_code": room.room_code}
 
 
@@ -279,8 +281,13 @@ async def ws_game(websocket: WebSocket, room_code: str, seat: int):
 
     # If game already running, send personalized replay so joiner can catch up.
     if room.status == "running" and room._renderer:
-        events = [ser_event_pov(e, seat) for e in room._renderer.events]
+        reveal = room.reveal_seats(all_humans_done=False)
+        events = [ser_event_pov(e, seat, reveal) for e in room._renderer.events]
         await websocket.send_json({"type": "catch_up", "events": events})
+
+    # Debug mode: resend each AI seat's latest reasoning to a (re)joining player.
+    for report in list(room.thoughts.values()):
+        await websocket.send_json({"type": "ai_thought", **report})
 
     try:
         while True:

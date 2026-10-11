@@ -28,3 +28,17 @@ def test_pass_button_is_shown_with_an_explicit_display_value():
         assert shown.group(1) not in ("", "none"), (
             "pass button can never appear: table.css hides it and game.js only "
             "clears the inline style")
+
+
+def test_debug_mode_is_wired_through_the_play_page():
+    """Lobby checkbox → create request → room flag → thought messages → game view."""
+    html = _read("play.html")
+    lobby = _read("src", "pages", "lobby.js")
+    play = _read("src", "pages", "play.js")
+    game = _read("src", "pages", "game.js")
+
+    assert 'id="ai-debug"' in html
+    assert re.search(r"debug:\s*document\.getElementById\('ai-debug'\)\.checked", lobby)
+    assert "case 'ai_thought':" in play and "game.handleThought(" in play
+    assert "debug: roomDebug" in play
+    assert "export function handleThought(" in game

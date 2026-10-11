@@ -9,6 +9,7 @@ import * as game from '/src/pages/game.js';
 let myRoom = null;
 let mySeat = -1;
 let roomSeats = [];
+let roomDebug = false;   // debug room: AI hands and LLM reasoning are shown
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WebSocket
@@ -90,6 +91,7 @@ function handleMsg(msg) {
   switch (msg.type) {
     case 'room_state':
       roomSeats = msg.seats;
+      roomDebug = !!msg.debug;
       updateSeats(roomSeats, mySeat);
       setStatus(msg.status === 'running' ? 'Game in progress — rejoining…' : 'Waiting for players…');
       break;
@@ -107,6 +109,7 @@ function handleMsg(msg) {
         sendWS: sendWS,
         roomCode: myRoom,
         showScreen: showScreen,
+        debug: roomDebug,
       });
       showScreen('game-screen');
       requestAnimationFrame(() => {
@@ -126,6 +129,7 @@ function handleMsg(msg) {
           sendWS: sendWS,
           roomCode: myRoom,
           showScreen: showScreen,
+          debug: roomDebug,
         });
         showScreen('game-screen');
         // Populate event log from descriptions (no animations/sounds on catch-up)
@@ -159,6 +163,10 @@ function handleMsg(msg) {
 
     case 'game_over':
       game.handleGameOver(msg.replay);
+      break;
+
+    case 'ai_thought':
+      game.handleThought(msg);
       break;
 
     case 'error':
@@ -198,6 +206,7 @@ function startGame() {
     sendWS: sendWS,
     roomCode: myRoom,
     showScreen: showScreen,
+    debug: roomDebug,
   });
   showScreen('game-screen');
   requestAnimationFrame(() => {

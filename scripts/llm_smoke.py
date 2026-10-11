@@ -28,25 +28,6 @@ from llm_client import get_model           # noqa: E402
 from llm_player import LLMPlayer           # noqa: E402
 
 
-class _TimedLLMPlayer(LLMPlayer):
-    """Records per-decision latency and option counts."""
-
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.samples: list[tuple[float, int]] = []
-
-    def _log(self, view, options, replies, choice, move, latency, error):
-        self.samples.append((latency, len(options)))
-        super()._log(view, options, replies, choice, move, latency, error)
-        if self.verbose:
-            tag = "FALLBACK" if choice is None else f"#{choice}"
-            last = replies[-1].strip().replace("\n", " ")[:70] if replies else error
-            print(f"  P{self.id} {len(options):3d} options {latency:5.1f}s {tag:8s} "
-                  f"→ {move}   | {last}")
-
-    verbose = False
-
-
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None, help="name in config/llm_models.json")
@@ -54,18 +35,30 @@ def main() -> None:
     ap.add_argument("--hands", type=int, default=1)
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--explain", action="store_true",
+                    help="ask for a short analysis with each move (what debug mode does)")
     args = ap.parse_args()
 
     cfg = get_model(args.model)
     print(f"model={cfg.name}  url={cfg.base_url}  LLM seats={args.seats}  "
           f"hands={args.hands}  seed={args.seed}")
 
-    _TimedLLMPlayer.verbose = args.verbose
-    llm_seats: list[_TimedLLMPlayer] = []
+    reports: list[dict] = []
+
+    def on_decision(d: dict) -> None:
+        reports.append(d)
+        if args.verbose:
+            tag = "FALLBACK" if d["fallback"] else f"#{d['choice']}"
+            said = d["reason"] or d["error"] or (d["replies"][-1][:60] if d["replies"] else "")
+            print(f"  P{d['seat']} {d['n_options']:3d} options {d['latency_ms'] / 1000:5.1f}s "
+                  f"{tag:8s} → {d['move']}   | {said}")
+
+    llm_seats: list[LLMPlayer] = []
     players: list = []
     for i in range(6):
         if i in args.seats:
-            p = _TimedLLMPlayer(i, cfg)
+            p = LLMPlayer(i, cfg, explain=args.explain)
+            p.on_decision = on_decision
             llm_seats.append(p)
             players.append(p)
         else:
@@ -82,8 +75,8 @@ def main() -> None:
               f"finish={result.finish_order}  scores={result.final_scores}")
     elapsed = time.time() - t0
 
-    lat = [s[0] for p in llm_seats for s in p.samples]
-    opts = [s[1] for p in llm_seats for s in p.samples]
+    lat = [d["latency_ms"] / 1000 for d in reports]
+    opts = [d["n_options"] for d in reports]
     total = {k: sum(p.stats[k] for p in llm_seats)
              for k in ("decisions", "model_calls", "retries", "fallbacks")}
     print(f"\ndecisions={total['decisions']}  model_calls={total['model_calls']}  "

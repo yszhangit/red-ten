@@ -18,6 +18,19 @@
 - LLM 座位不再额外加 1-3 秒的"思考"延迟（模型本身已需数秒）。
 - 每次决策记录在 `debug_logs/llm/<日期>.jsonl`；`scripts/llm_smoke.py` 可不开界面跑一局并统计耗时。
 
+### 调试模式：显示 AI 手牌和模型思考
+
+**文件**: `src/room_manager.py`, `src/web_server.py`, `src/llm_player.py`, `src/llm_client.py`, `src/llm_view.py`, `web/play.html`, `web/src/pages/{lobby,play,game}.js`, `web/src/styles/*.css`
+
+**功能**: `/play` 大厅新增 "Debug mode" 选项。在调试房间里：
+- 所有 AI 座位的手牌对真人玩家可见（按点数分组显示，♥10 单独标出）。
+- LLM 座位每次出牌会附带两三句分析。出过牌的座位上出现 💭，鼠标悬停可查看，点击可固定面板。
+- 面板内容：出的牌、模型的说明、模型返回的思考过程（thinking tokens，如有）、全部可选出牌、模型看到的信息、模型的原始回答。
+- 调试房间在房间列表和牌桌上都有标注；普通房间不发送任何 AI 手牌或思考内容。
+- 服务端新增 WebSocket 消息 `ai_thought`，`room_state` 新增 `debug` 字段，创建房间接口新增 `debug` 参数。
+
+**说明**: Qwen 自带的"思考"功能保持关闭——打开后，一次只有 5 个选项的出牌用掉 6000 个 token（超过五分钟）仍未给出答案。调试模式下每次 LLM 出牌约需 6-15 秒（普通模式约 4 秒）。
+
 ### 修复：首页的"训练"和"回看"按钮打不开
 
 **文件**: `src/web_server.py`

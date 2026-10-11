@@ -290,6 +290,28 @@ the model at the start of every turn; restart the server after editing.
 the UI and prints each decision, the model's stated reason, and timings. Every
 decision is also appended to `debug_logs/llm/<date>.jsonl`.
 
+### Debug mode: watch how the AI plays
+
+Tick **Debug mode** in the `/play` lobby before creating a game. In that room:
+
+- every AI seat's hand is shown to the human players (one chip per rank, e.g.
+  `K×2`; ♥10 is highlighted);
+- each LLM seat is asked to write two or three sentences of analysis with its
+  move. A 💭 appears on the seat once it has played: hover to peek, click to
+  pin the panel. The panel shows the move, the model's explanation, any
+  thinking tokens the server returned, the full list of options it chose from,
+  exactly what it was shown, and its raw reply.
+
+Debug rooms are marked "debug" in the room list and on the table, since
+everyone in the room sees the AI hands. Asking for the analysis makes each LLM
+decision slower: roughly 6–15 seconds instead of 4.
+
+About thinking tokens: Qwen's built-in "thinking" is switched off in
+`config/llm_models.json`, because with it on the model spent 6,000 tokens
+(over five minutes) on a single five-option turn without reaching an answer. The panel
+shows thinking tokens whenever a model does return them, so another model or
+config entry can use them.
+
 With Qwen3.5-9B on an M4 laptop a decision takes about 4 seconds. The server
 answers one request at a time, so one or two LLM seats per game is comfortable.
 

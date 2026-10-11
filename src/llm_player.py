@@ -8,8 +8,13 @@ RuleBasedPlayer so a slow or broken model can never stall a game.
 
 Rules and strategy text come from the files named in the model's config
 (skills/*.zh.md), so play can be tuned without touching code.
+
+Every decision is described by a report dict (what the model was shown, what
+it answered, any thinking tokens, timing). It is appended to a JSONL log and
+handed to `on_decision` if set — debug mode uses that to show it in the UI.
 """
 from __future__ import annotations
+import dataclasses
 import datetime
 import json
 import os
@@ -22,19 +27,21 @@ from state import GameState
 from hand import Player
 from rule_player import RuleBasedPlayer
 from llm_client import LLMError, ModelConfig, chat_completion
-from llm_view import build_options, build_view
+from llm_view import Option, build_options, build_view, describe_move
 
 _REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DEFAULT_LOG_DIR = os.path.join(_REPO, "debug_logs", "llm")
 
 _OUTPUT_RULE = (
     "每次轮到你时，程序会列出所有合法的出牌并编号，你只能从中选一个。\n"
-    '只输出一行 JSON：{"move": 编号, "reason": "不超过20字的理由"}。不要输出别的内容。'
+    "严格按照消息末尾给出的 JSON 格式回答，不要输出别的内容。"
 )
+# Room for the longer answer that explain mode asks for.
+_EXPLAIN_MIN_TOKENS = 300
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.S)
+_THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
 _MOVE_RE = re.compile(r'"move"\s*:\s*"?\s*(-?\d+)')
-_REASON_RE = re.compile(r'"reason"\s*:\s*"([^"]*)"')
+_TEXT_FIELD_RE = r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"'
 
 _prompt_cache: dict[tuple[str, str], str] = {}
 
@@ -48,13 +55,34 @@ def parse_choice(reply: str, n_options: int) -> Optional[int]:
     if m:
         n = int(m.group(1))
     else:
-        if '"reason"' in text:
+        if '"reason"' in text or '"analysis"' in text:
             return None
         nums = set(re.findall(r"-?\d+", text))
         if len(nums) != 1:
             return None
         n = int(nums.pop())
     return n if 1 <= n <= n_options else None
+
+
+def _stated_reason(reply: str) -> str:
+    """The model's own explanation: the "analysis" or "reason" field."""
+    for name in ("analysis", "reason"):
+        m = re.search(_TEXT_FIELD_RE % name, reply)
+        if m:
+            try:
+                return str(json.loads('"' + m.group(1) + '"'))
+            except ValueError:
+                return m.group(1)
+    return ""
+
+
+def _thinking(reply: str) -> str:
+    """Thinking tokens: a separate reasoning field, or an inline <think> block."""
+    separate = getattr(reply, "reasoning", "") or ""
+    if separate:
+        return str(separate).strip()
+    blocks = _THINK_RE.findall(reply or "")
+    return "\n".join(b.strip() for b in blocks)
 
 
 def system_prompt(cfg: ModelConfig) -> str:
@@ -82,14 +110,27 @@ class LLMPlayer(Player):
     def __init__(self, player_id: int, config: ModelConfig,
                  chat: Optional[Callable[[list[dict]], str]] = None,
                  fallback: Optional[Player] = None,
-                 log_dir: Optional[str] = None):
+                 log_dir: Optional[str] = None,
+                 explain: bool = False):
         super().__init__(player_id)
         self.config = config
-        self._chat = chat or (lambda messages: chat_completion(config, messages))
+        self._chat = chat
         self._fallback = fallback or RuleBasedPlayer(player_id)
         self._log_dir = log_dir or DEFAULT_LOG_DIR
+        # Ask the model to write a short analysis with each choice.
+        self.explain = explain
+        # Called with the decision report after every model-backed decision.
+        self.on_decision: Optional[Callable[[dict], None]] = None
         self.stats = {"decisions": 0, "model_calls": 0, "retries": 0,
                       "fallbacks": 0, "latency_s": 0.0}
+
+    def _ask(self, messages: list[dict]) -> str:
+        if self._chat is not None:
+            return self._chat(messages)
+        cfg = self.config
+        if self.explain and cfg.max_tokens < _EXPLAIN_MIN_TOKENS:
+            cfg = dataclasses.replace(cfg, max_tokens=_EXPLAIN_MIN_TOKENS)
+        return chat_completion(cfg, messages)
 
     def choose_action(self, state: GameState, legal_moves: list[Move]) -> Move:
         if not legal_moves:
@@ -101,7 +142,7 @@ class LLMPlayer(Player):
         if len(options) == 1:
             return options[0].move
 
-        view = build_view(state, self.id, options)
+        view = build_view(state, self.id, options, explain=self.explain)
         messages = [{"role": "system", "content": system_prompt(self.config)},
                     {"role": "user", "content": view}]
 
@@ -109,12 +150,14 @@ class LLMPlayer(Player):
         replies: list[str] = []
         choice: Optional[int] = None
         error = ""
+        thinking = ""
         t0 = time.time()
         try:
             for attempt in range(2):
                 self.stats["model_calls"] += 1
-                reply = self._chat(messages)
+                reply = self._ask(messages)
                 replies.append(reply)
+                thinking = _thinking(reply) or thinking
                 choice = parse_choice(reply, len(options))
                 if choice is not None:
                     break
@@ -127,6 +170,7 @@ class LLMPlayer(Player):
                     ]
         except LLMError as e:
             error = str(e)
+            thinking = e.reasoning.strip() or thinking
         latency = time.time() - t0
         self.stats["latency_s"] += latency
 
@@ -138,26 +182,26 @@ class LLMPlayer(Player):
             if move not in legal_moves:
                 move = legal_moves[0]
 
-        self._log(view, options, replies, choice, move, latency, error)
+        self._report(view, options, replies, choice, move, latency, error, thinking)
         return move
 
-    def _log(self, view, options, replies, choice, move, latency, error) -> None:
-        reason = ""
-        if replies:
-            m = _REASON_RE.search(replies[-1])
-            reason = m.group(1) if m else ""
+    def _report(self, view: str, options: list[Option], replies: list[str],
+                choice: Optional[int], move: Move, latency: float,
+                error: str, thinking: str) -> None:
         record = {
             "ts": datetime.datetime.now().isoformat(timespec="seconds"),
             "seat": self.id,
             "model": self.config.name,
             "n_options": len(options),
             "choice": choice,
-            "move": str(move),
-            "reason": reason,
+            "move": describe_move(move),
+            "reason": _stated_reason(replies[-1]) if replies and choice is not None else "",
+            "thinking": thinking,
             "fallback": choice is None,
             "error": error,
             "latency_ms": round(latency * 1000),
-            "replies": replies,
+            "replies": [str(r) for r in replies],
+            "options": [o.text for o in options],
             "view": view,
         }
         try:
@@ -167,3 +211,8 @@ class LLMPlayer(Player):
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
+        if self.on_decision is not None:
+            try:
+                self.on_decision(record)
+            except Exception:
+                pass    # a listener bug must never cost the seat its move

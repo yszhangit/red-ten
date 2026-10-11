@@ -54,7 +54,7 @@ async function refreshRoomList() {
       const tier    = tierName[room.ai_tier] || room.ai_tier;
       return `<div class="room-row">
         <span class="room-code-tag">${room.code}</span>
-        <span class="room-info">${status} · ${players} · ${tier}</span>
+        <span class="room-info">${status} · ${players} · ${tier}${room.debug ? ' · debug' : ''}</span>
         <button class="room-join-btn" data-code="${room.code}">Join →</button>
       </div>`;
     }).join('');
@@ -83,7 +83,8 @@ async function createGame() {
     const r = await fetch('/api/room/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ai_tier: tier }),
+      body: JSON.stringify({ ai_tier: tier,
+                             debug: document.getElementById('ai-debug').checked }),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
