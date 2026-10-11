@@ -290,6 +290,33 @@ the model at the start of every turn; restart the server after editing.
 the UI and prints each decision, the model's stated reason, and timings. Every
 decision is also appended to `debug_logs/llm/<date>.jsonl`.
 
+**When a model does not work** ("模型没有给出有效回答" in the debug panel, or the
+AI plays instantly because the rule AI took over):
+
+- The server log (the terminal running `web_server.py`) has one `[llm]` line per
+  decision. A failed turn also prints the reason, the model's raw reply, why it
+  stopped (`finish_reason`) and the token counts, then a `FALLBACK` line.
+- `python src/web_server.py --llm-debug` additionally prints every request and
+  the response body exactly as the model server sent it.
+- `python scripts/llm_smoke.py --model <name> --probe` does the same for a single
+  opening-hand turn without the UI, and first checks that the configured model
+  name is one the server offers.
+
+Usual causes, and what the log line looks like:
+
+| Log says | Cause | Fix |
+|---|---|---|
+| `empty reply (finish_reason=length …) — the model spent its reply on thinking` | Thinking is on and used up `max_tokens` | Switch thinking off in the model server, or raise `max_tokens` |
+| `HTTP 400 …` mentioning context length | The model was loaded with a small context window. An opening hand needs about 4,000 tokens | Load the model with a context length of 8192 or more |
+| `HTTP 404 …` or a model-not-found message | `model` in the config is not the server's name for it | Copy the id from `<base_url>/models` |
+| `TimeoutError … timeout_s=30` | The model is slower than the limit, or was still loading | Raise `timeout_s` |
+| `Connection refused` | Wrong `base_url`, or the server is not running | Start it, or fix the port |
+| `reply 1 of 2 not usable … '<text>'` | The model answered, but not with a number from the list | Look at the text; the skill or `max_tokens` may need changing |
+
+LM Studio notes: the server listens on port 1234 by default; Gemma 4 has
+"Enable Thinking" on by default; and models are often loaded with a 4096-token
+context unless you raise it.
+
 ### Debug mode: watch how the AI plays
 
 Tick **Debug mode** in the `/play` lobby before creating a game. In that room:

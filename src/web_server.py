@@ -413,7 +413,12 @@ if __name__ == "__main__":
     import uvicorn
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=5173)
+    ap.add_argument("--llm-debug", action="store_true",
+                    help="log every LLM request and the raw response from the model server")
     args = ap.parse_args()
+    if args.llm_debug:
+        from llm_client import set_debug
+        set_debug(True)
     print(f"Red Ten web UI → http://localhost:{args.port}/")
     print(f"Multiplayer    → http://localhost:{args.port}/play")
     uvicorn.run(app, host="0.0.0.0", port=args.port)

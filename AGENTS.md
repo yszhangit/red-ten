@@ -4,6 +4,12 @@ A 6-player, 3-deck 红十 card game: Python engine and FastAPI server in `src/`,
 in `src/` and `src/agents/`, browser UI in `web/`. This is an existing, working project
 owned by a non-programmer (Henry). Change it carefully and in small steps.
 
+`CLAUDE.md` was carried over from the original repo and is partly out of date: its test
+count and "zero mypy errors" are old, the Stop hook it describes is not configured, and
+it knows nothing about `src/agents/`, the Vite frontend or the LLM seat. Its debug-flag
+instructions still hold. Where it disagrees with this file or with the code, trust the
+code first, then this file, and check a command before relying on it.
+
 ## Commands
 
 Run these from the repo root with the virtual environment active
@@ -58,6 +64,10 @@ Run these from the repo root with the virtual environment active
 - Always validate the model's reply against `legal_moves`; retry once, then fall back to
   an engine player. A model outage must never stall a game.
 - Strategy lives in `skills/*.zh.md`, in Chinese, so Henry can edit it.
+- Models differ in reply format (thinking tokens, where they appear, stop reasons).
+  Handle a difference in `src/llm_client.py` / `src/llm_player.py` with a test built from
+  the real raw reply; get that reply with `python scripts/llm_smoke.py --model <name> --probe`.
+- LLM activity goes to the `redten.llm` logger (stdout), not `print`.
 
 ## Brownfield guardrails
 

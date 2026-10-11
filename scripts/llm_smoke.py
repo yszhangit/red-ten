@@ -8,14 +8,21 @@ Usage:
     python scripts/llm_smoke.py                       # 1 hand, seat 0 is the LLM
     python scripts/llm_smoke.py --seats 0 3 --hands 2
     python scripts/llm_smoke.py --model gemma4-e4b --seed 5 --verbose
+    python scripts/llm_smoke.py --model gemma4-e4b --probe   # one turn, raw output
+
+--probe is the thing to run when a model does not work: it lists the models the
+server offers, sends one opening-hand turn, and prints the request and the
+response exactly as the server sent it.
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import random
 import statistics
 import sys
 import time
+import urllib.request
 
 _SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
 sys.path.insert(0, _SRC)
@@ -24,8 +31,44 @@ sys.path.insert(0, os.path.join(_SRC, "agents"))
 from hand import Hand                      # noqa: E402
 from logger import GameLogger              # noqa: E402
 from rule_player import RuleBasedPlayer    # noqa: E402
-from llm_client import get_model           # noqa: E402
+from moves import get_legal_moves          # noqa: E402
+from llm_client import ModelConfig, get_model, set_debug   # noqa: E402
 from llm_player import LLMPlayer           # noqa: E402
+from llm_view import describe_move         # noqa: E402
+
+
+def probe(cfg: ModelConfig, seat: int, seed: int, explain: bool) -> None:
+    """One opening-hand turn with everything printed."""
+    url = cfg.base_url.rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            ids = [m.get("id") for m in json.loads(resp.read().decode("utf-8")).get("data", [])]
+        print(f"models offered by {url}: {ids}")
+        if cfg.model not in ids:
+            print(f'!! "{cfg.model}" (from config/llm_models.json) is not in that list')
+    except Exception as e:
+        print(f"could not list models at {url}: {type(e).__name__}: {e}")
+
+    set_debug(True)
+    random.seed(seed)
+    players: list = [RuleBasedPlayer(i) for i in range(6)]
+    hand = Hand(players, seat, GameLogger(verbose=False))
+    hand.deal()
+    state = hand.state
+    legal = get_legal_moves(state.hands[seat], None)
+
+    player = LLMPlayer(seat, cfg, explain=explain)
+    reports: list[dict] = []
+    player.on_decision = reports.append
+    move = player.choose_action(state, legal)
+
+    d = reports[0]
+    print("\n── result ──")
+    print(f"played: {describe_move(move)}   options: {d['n_options']}   "
+          f"time: {d['latency_ms'] / 1000:.1f}s   model calls: {player.stats['model_calls']}")
+    print("FALLBACK: the rule AI played this turn. " + d["error"] if d["fallback"]
+          else f"model chose #{d['choice']}: {d['reason']}")
+    print(f"thinking tokens received: {len(d['thinking'])} chars")
 
 
 def main() -> None:
@@ -37,9 +80,20 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--explain", action="store_true",
                     help="ask for a short analysis with each move (what debug mode does)")
+    ap.add_argument("--debug", action="store_true",
+                    help="print every request and the raw response from the model server")
+    ap.add_argument("--probe", action="store_true",
+                    help="send one opening-hand turn, print everything, and stop")
     args = ap.parse_args()
 
     cfg = get_model(args.model)
+    if args.probe:
+        print(f"model={cfg.name}  url={cfg.base_url}  id={cfg.model}  "
+              f"max_tokens={cfg.max_tokens}  timeout_s={cfg.timeout_s:g}")
+        probe(cfg, args.seats[0], args.seed, args.explain)
+        return
+    if args.debug:
+        set_debug(True)
     print(f"model={cfg.name}  url={cfg.base_url}  LLM seats={args.seats}  "
           f"hands={args.hands}  seed={args.seed}")
 

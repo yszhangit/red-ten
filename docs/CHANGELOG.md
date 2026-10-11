@@ -18,6 +18,19 @@
 - LLM 座位不再额外加 1-3 秒的"思考"延迟（模型本身已需数秒）。
 - 每次决策记录在 `debug_logs/llm/<日期>.jsonl`；`scripts/llm_smoke.py` 可不开界面跑一局并统计耗时。
 
+### LLM 座位：服务端日志和 Gemma 4 兼容
+
+**文件**: `src/llm_client.py`, `src/llm_player.py`, `src/web_server.py`, `scripts/llm_smoke.py`, `config/llm_models.json`, `tests/test_llm_logging.py`
+
+**功能**: 模型出错时可以直接从服务端终端看出原因。
+- 每次 LLM 决策在终端输出一行 `[llm]` 日志（座位、模型、选项数、耗时、token 数、所选出牌和理由）。
+- 回答无法使用时，输出模型的原始回答、停止原因（finish_reason）和 token 数；请求失败时输出服务器返回的错误内容；改由规则 AI 出牌时输出 `FALLBACK`。
+- `python src/web_server.py --llm-debug`（或环境变量 `REDTEN_LLM_DEBUG=1`）会额外输出每次请求和模型服务器的原始响应。
+- `python scripts/llm_smoke.py --model <名称> --probe` 只发送一手开局牌并输出全部内容，同时检查配置的模型名是否在服务器的模型列表里。
+- 错误信息更具体：空回答会说明是否被"思考"占满；超时会指出 `timeout_s`；HTTP 错误带上服务器的说明（如上下文长度不足、模型名不存在）。
+- 识别 Gemma 4 的思考格式（`<|channel>thought … <channel|>`），不会把思考内容里的数字当成出牌编号，并在调试面板中显示。
+- `gemma4-e4b` 的默认配置改为 LM Studio（端口 1234）。
+
 ### 调试模式：显示 AI 手牌和模型思考
 
 **文件**: `src/room_manager.py`, `src/web_server.py`, `src/llm_player.py`, `src/llm_client.py`, `src/llm_view.py`, `web/play.html`, `web/src/pages/{lobby,play,game}.js`, `web/src/styles/*.css`

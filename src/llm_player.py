@@ -12,6 +12,9 @@ Rules and strategy text come from the files named in the model's config
 Every decision is described by a report dict (what the model was shown, what
 it answered, any thinking tokens, timing). It is appended to a JSONL log and
 handed to `on_decision` if set — debug mode uses that to show it in the UI.
+
+The server log (stdout) gets one line per decision, plus the raw reply and
+what the server said about it whenever a reply could not be used.
 """
 from __future__ import annotations
 import dataclasses
@@ -26,7 +29,7 @@ from moves import Move
 from state import GameState
 from hand import Player
 from rule_player import RuleBasedPlayer
-from llm_client import LLMError, ModelConfig, chat_completion
+from llm_client import LLMError, ModelConfig, chat_completion, log
 from llm_view import Option, build_options, build_view, describe_move
 
 _REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -39,7 +42,11 @@ _OUTPUT_RULE = (
 # Room for the longer answer that explain mode asks for.
 _EXPLAIN_MIN_TOKENS = 300
 
-_THINK_RE = re.compile(r"<think>(.*?)</think>", re.S)
+# Inline thinking: Qwen-style <think> blocks and Gemma 4's thought channel.
+_THINK_RE = re.compile(r"<think>(.*?)</think>|<\|channel>thought(.*?)<channel\|>", re.S)
+_THINK_OPEN_RE = re.compile(r"<think>|<\|channel>thought")
+# How much of a reply the server log shows when it could not be used.
+_LOG_REPLY_CHARS = 800
 _MOVE_RE = re.compile(r'"move"\s*:\s*"?\s*(-?\d+)')
 _TEXT_FIELD_RE = r'"%s"\s*:\s*"((?:[^"\\]|\\.)*)"'
 
@@ -49,8 +56,9 @@ _prompt_cache: dict[tuple[str, str], str] = {}
 def parse_choice(reply: str, n_options: int) -> Optional[int]:
     """Extract the 1-based option number from a model reply, or None."""
     text = _THINK_RE.sub("", reply or "")
-    if "<think>" in text:                      # unterminated thinking block
-        text = text.split("<think>")[0]
+    unfinished = _THINK_OPEN_RE.search(text)   # thinking that never ended
+    if unfinished:
+        text = text[:unfinished.start()]
     m = _MOVE_RE.search(text)
     if m:
         n = int(m.group(1))
@@ -77,12 +85,28 @@ def _stated_reason(reply: str) -> str:
 
 
 def _thinking(reply: str) -> str:
-    """Thinking tokens: a separate reasoning field, or an inline <think> block."""
+    """Thinking tokens: a separate reasoning field, or an inline thinking block."""
     separate = getattr(reply, "reasoning", "") or ""
     if separate:
         return str(separate).strip()
     blocks = _THINK_RE.findall(reply or "")
-    return "\n".join(b.strip() for b in blocks)
+    return "\n".join((a or b).strip() for a, b in blocks)
+
+
+def _reply_facts(reply: str) -> str:
+    """What the server said about a reply, for the log."""
+    parts = []
+    finish = getattr(reply, "finish_reason", "")
+    if finish:
+        parts.append(f"finish_reason={finish}")
+    usage = getattr(reply, "usage", None) or {}
+    if usage:
+        parts.append(f"tokens {usage.get('prompt_tokens', '?')}"
+                     f"+{usage.get('completion_tokens', '?')}")
+    thinking = _thinking(reply)
+    if thinking:
+        parts.append(f"thinking {len(thinking)} chars")
+    return ", ".join(parts)
 
 
 def system_prompt(cfg: ModelConfig) -> str:
@@ -161,6 +185,10 @@ class LLMPlayer(Player):
                 choice = parse_choice(reply, len(options))
                 if choice is not None:
                     break
+                log.warning("P%d %s: reply %d of 2 not usable (%s): %r",
+                            self.id, self.config.name, attempt + 1,
+                            _reply_facts(reply) or "no details from server",
+                            str(reply)[:_LOG_REPLY_CHARS])
                 if attempt == 0:
                     self.stats["retries"] += 1
                     messages = messages + [
@@ -171,6 +199,11 @@ class LLMPlayer(Player):
         except LLMError as e:
             error = str(e)
             thinking = e.reasoning.strip() or thinking
+            log.warning("P%d %s: request failed: %s", self.id, self.config.name, error)
+            if e.reasoning.strip():
+                log.warning("P%d %s: thinking received before the failure: %r",
+                            self.id, self.config.name,
+                            e.reasoning.strip()[:_LOG_REPLY_CHARS])
         latency = time.time() - t0
         self.stats["latency_s"] += latency
 
@@ -181,6 +214,9 @@ class LLMPlayer(Player):
             move = self._fallback.choose_action(state, legal_moves)
             if move not in legal_moves:
                 move = legal_moves[0]
+            log.warning("P%d %s: FALLBACK to rule AI after %.1fs (%d options) → %s",
+                        self.id, self.config.name, latency, len(options),
+                        describe_move(move))
 
         self._report(view, options, replies, choice, move, latency, error, thinking)
         return move
@@ -204,6 +240,12 @@ class LLMPlayer(Player):
             "options": [o.text for o in options],
             "view": view,
         }
+        if choice is not None:
+            facts = _reply_facts(replies[-1])
+            log.info("P%d %s: %d options, %.1fs%s → #%d %s | %s",
+                     self.id, self.config.name, len(options), latency,
+                     f" ({facts})" if facts else "", choice, record["move"],
+                     record["reason"])
         try:
             os.makedirs(self._log_dir, exist_ok=True)
             path = os.path.join(self._log_dir, f"{datetime.date.today().isoformat()}.jsonl")

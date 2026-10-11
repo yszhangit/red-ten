@@ -5,16 +5,54 @@ Model config and a minimal client for OpenAI-compatible chat endpoints
 Models are named in config/llm_models.json; set REDTEN_LLM_CONFIG to use
 another file. API keys are never stored in the file — a model may name an
 environment variable to read one from.
+
+Everything an LLM seat does is logged on the "redten.llm" logger, which prints
+to stdout: one line per decision, and the raw reply whenever it could not be
+used. Set REDTEN_LLM_DEBUG=1 (or call set_debug) to also print every request
+and the response body exactly as the server sent it.
 """
 from __future__ import annotations
 import json
+import logging
 import os
+import sys
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Optional
 
 _REPO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 DEFAULT_CONFIG_PATH = os.path.join(_REPO, "config", "llm_models.json")
+
+log = logging.getLogger("redten.llm")
+
+
+class _StdoutHandler(logging.StreamHandler):
+    """Writes to whatever sys.stdout is at the time of the message."""
+
+    def __init__(self) -> None:
+        logging.Handler.__init__(self)
+        self.terminator = "\n"
+
+    @property                                   # type: ignore[override]
+    def stream(self):
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, value) -> None:
+        pass
+
+
+def set_debug(on: bool = True) -> None:
+    """Also log every request and raw response (on), or only decisions (off)."""
+    log.setLevel(logging.DEBUG if on else logging.INFO)
+
+
+if not log.handlers:
+    _handler = _StdoutHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s [llm] %(message)s", "%H:%M:%S"))
+    log.addHandler(_handler)
+    set_debug(os.environ.get("REDTEN_LLM_DEBUG", "") not in ("", "0"))
 
 
 class LLMError(Exception):
@@ -23,13 +61,18 @@ class LLMError(Exception):
 
 
 class ChatReply(str):
-    """The reply text, plus any separate reasoning ("thinking") tokens the
-    server returned alongside it."""
+    """The reply text, plus what the server said about it: any separate
+    reasoning ("thinking") tokens, why it stopped, and token counts."""
     reasoning: str
+    finish_reason: str
+    usage: dict[str, Any]
 
-    def __new__(cls, content: str, reasoning: str = "") -> "ChatReply":
+    def __new__(cls, content: str, reasoning: str = "", finish_reason: str = "",
+                usage: Optional[dict[str, Any]] = None) -> "ChatReply":
         obj = super().__new__(cls, content)
         obj.reasoning = reasoning
+        obj.finish_reason = finish_reason
+        obj.usage = usage or {}
         return obj
 
 
@@ -98,19 +141,47 @@ def chat_completion(cfg: ModelConfig, messages: list[dict],
     url = cfg.base_url.rstrip("/") + "/chat/completions"
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"),
                                  headers=headers, method="POST")
+    if log.isEnabledFor(logging.DEBUG):
+        settings = {k: v for k, v in body.items() if k != "messages"}
+        log.debug("→ POST %s %s", url, json.dumps(settings, ensure_ascii=False))
+        for m in messages:
+            log.debug("→ %s (%d chars):\n%s", m.get("role"), len(str(m.get("content"))),
+                      m.get("content"))
     try:
         with opener(req, timeout=cfg.timeout_s) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+        log.debug("← raw response:\n%s", raw)
+        data = json.loads(raw)
         choice = data["choices"][0]
         message = choice["message"]
         content = message.get("content")
         reasoning = str(message.get("reasoning") or message.get("reasoning_content") or "")
+        finish = str(choice.get("finish_reason") or "")
+        usage = data.get("usage") or {}
+    except urllib.error.HTTPError as e:
+        # The body is where the server says what it did not like
+        # (unknown model name, prompt longer than the context window, ...).
+        try:
+            detail = e.read().decode("utf-8", "replace").strip()[:500]
+        except Exception:
+            detail = ""
+        raise LLMError(f"{cfg.name}: HTTP {e.code} {e.reason}: {detail}") from e
     except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as e:
-        raise LLMError(f"{cfg.name}: {type(e).__name__}: {e}") from e
+        hint = ""
+        if isinstance(e, TimeoutError) or "timed out" in str(e):
+            hint = (f" — no reply within timeout_s={cfg.timeout_s:g}; "
+                    "raise it in config/llm_models.json if the model is just slow")
+        raise LLMError(f"{cfg.name}: {type(e).__name__}: {e}{hint}") from e
 
-    if not content or not content.strip():
-        err = LLMError(f"{cfg.name}: empty reply "
-                       f"(finish_reason={choice.get('finish_reason')})")
+    if not content or not str(content).strip():
+        facts = [f"finish_reason={finish or None}"]
+        if "completion_tokens" in usage:
+            facts.append(f"completion_tokens={usage['completion_tokens']}")
+        msg = f"{cfg.name}: empty reply ({', '.join(facts)})"
+        if reasoning:
+            msg += (f" — the model spent its reply on thinking ({len(reasoning)} chars); "
+                    "turn thinking off or raise max_tokens")
+        err = LLMError(msg)
         err.reasoning = reasoning
         raise err
-    return ChatReply(str(content), reasoning)
+    return ChatReply(str(content), reasoning, finish, usage)

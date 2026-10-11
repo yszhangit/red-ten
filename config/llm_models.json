@@ -11,12 +11,12 @@
       "note": "Served by mlx_lm.server. Thinking is switched off: with it on, the reply budget is spent on reasoning and no answer comes back."
     },
     "gemma4-e4b": {
-      "base_url": "http://localhost:11434/v1",
-      "model": "gemma4:e4b",
+      "base_url": "http://localhost:1234/v1",
+      "model": "google/gemma-4-e4b",
       "temperature": 0.3,
       "max_tokens": 120,
       "timeout_s": 30,
-      "note": "Placeholder. Set base_url and model to match how this model is served on the machine that runs it."
+      "note": "Served by LM Studio (default port 1234). 'model' must match an id listed by http://localhost:1234/v1/models. In LM Studio, load the model with a context length of at least 8192 (an opening hand needs about 4000 tokens) and switch 'Enable Thinking' off, or raise max_tokens. Check with: python scripts/llm_smoke.py --model gemma4-e4b --probe"
     }
   }
 }
