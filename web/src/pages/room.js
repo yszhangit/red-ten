@@ -49,8 +49,16 @@ function renderSeatGrid() {
     const div = document.createElement('div');
     div.className = 'seat-slot ' + (isMe ? 'mine' : isHuman ? 'taken' : 'ai');
     div.id = 'slot-' + i;
-    div.innerHTML = `<div class="slot-label">${pLabel(i)}</div>
-      <div class="slot-status">${isMe ? '\u{1F464} You' : isHuman ? '\u{1F464} Human' : '\u{1F916} AI'}</div>`;
+    // Names are typed by players: set them as text, never as HTML.
+    const label = document.createElement('div');
+    label.className = 'slot-label';
+    label.textContent = pLabel(i);
+    const status = document.createElement('div');
+    status.className = 'slot-status';
+    status.textContent = isMe ? `\u{1F464} ${info.name || 'You'}${info.name ? ' (You)' : ''}`
+      : isHuman ? `\u{1F464} ${info.name || 'Human'}`
+      : info.name ? `\u{1F916} AI（${info.name} 不在）` : '\u{1F916} AI';
+    div.append(label, status);
     if (!isHuman && !isMe) {
       div.addEventListener('click', () => {
         if (_onClaimSeat) _onClaimSeat(i);

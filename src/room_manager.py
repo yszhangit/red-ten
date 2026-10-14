@@ -21,6 +21,7 @@ import json
 import os
 import queue
 import random
+import secrets
 import string
 import sys as _sys
 import threading
@@ -29,6 +30,7 @@ import traceback as _tb
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
+import hosting
 from hand import Player
 from state import GameState
 from moves import Move
@@ -39,6 +41,25 @@ if TYPE_CHECKING:
     from fastapi import WebSocket
 
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "..", "debug_logs")
+
+MAX_NAME_LEN = 12
+
+
+class SeatTaken(Exception):
+    """The seat belongs to a connected player, or is being held for one who dropped."""
+
+
+class RoomLimit(Exception):
+    """No more tables may be opened right now."""
+
+
+class RoomClosed(Exception):
+    """Raised inside the game thread to end a table that has been closed."""
+
+
+def clean_name(name: str) -> str:
+    """A display name as the table shows it: one line, at most MAX_NAME_LEN characters."""
+    return " ".join(str(name).split())[:MAX_NAME_LEN]
 
 # ── AI self-play / battle configuration ─────────────────────────────────────
 
@@ -94,11 +115,15 @@ class SeatController(Player):
         with self._lock:
             self._ws = ws
             self._loop = loop
+        if self._room:
+            self._room.seat_attended(self.id)
 
     def detach(self) -> None:
         with self._lock:
             self._ws = None
             self._loop = None
+        if self._room:
+            self._room.seat_attended(self.id)
         # Wake up any blocked choose_action() so it can fall back to AI.
         self._move_queue.put_nowait(None)
 
@@ -116,6 +141,8 @@ class SeatController(Player):
     # ── Player interface ──────────────────────────────────────────────────────
 
     def choose_action(self, state: GameState, legal_moves: list[Move]) -> Move:
+        if self._room and self._room.should_stop():
+            raise RoomClosed()
         if not self.is_human:
             # The pause imitates thinking; a model-backed seat is slow enough already.
             own_latency = getattr(self.ai_player, "has_own_latency", False)
@@ -144,6 +171,8 @@ class SeatController(Player):
             try:
                 val = self._move_queue.get(timeout=1.0)
             except queue.Empty:
+                if self._room and self._room.should_stop():
+                    raise RoomClosed()
                 if not self.is_human:
                     return self.ai_player.choose_action(state, legal_moves)
                 continue
@@ -216,6 +245,15 @@ class GameRoom:
         self._game_thread: Optional[threading.Thread] = None
         self._continue_event = threading.Event()
 
+        # Who sits where. A player who joins gets a token; the seat is theirs
+        # while they are connected and is held for them for a while if they drop.
+        self.names: list[str] = [""] * 6
+        self._owners: list[Optional[str]] = [None] * 6
+        self._left_at: list[float] = [0.0] * 6
+        self._seat_lock = threading.Lock()
+        self._closed = False
+        self._last_attended = time.monotonic()
+
         # Spectator support
         self._spectators: list[tuple] = []  # (WebSocket, event_loop)
         self._spectator_lock = threading.Lock()
@@ -284,11 +322,108 @@ class GameRoom:
         self.thoughts[report["seat"]] = report
         self.broadcast({"type": "ai_thought", **report})
 
+    # ── seats and their players ───────────────────────────────────────────────
+
+    def seat_info(self, seat: int) -> dict:
+        return {"seat": seat, "mode": "human" if self.seats[seat].is_human else "ai",
+                "name": self.names[seat]}
+
+    def seats_info(self) -> list[dict]:
+        return [self.seat_info(i) for i in range(6)]
+
+    def announce_seat(self, seat: int) -> None:
+        """Tell everyone at the table who now sits in a seat."""
+        self.broadcast({"type": "seat_update", **self.seat_info(seat)})
+
+    def claim_seat(self, seat: int, name: str = "",
+                   token: Optional[str] = None) -> tuple[int, str]:
+        """Reserve a seat for a player; seat -1 means any free one. Returns the
+        seat and the token the player's WebSocket must present.
+
+        A player who passes the token they already hold keeps their seat (a
+        reconnect or a page reload) or moves to another one. Without it, a seat
+        is free when no human is connected to it and nobody has claimed it or
+        dropped from it in the last `seat_hold_s` seconds. Raises SeatTaken."""
+        now = time.monotonic()
+        hold = hosting.settings.seat_hold_s
+        with self._seat_lock:
+            if token is None or token not in self._owners:
+                token = None
+
+            def free(i: int) -> bool:
+                if self._owners[i] is not None and self._owners[i] == token:
+                    return True
+                if self.seats[i].is_human:
+                    return False
+                return self._owners[i] is None or now - self._left_at[i] >= hold
+
+            if seat == -1:
+                mine = [i for i in range(6) if token and self._owners[i] == token]
+                open_seats = mine or [i for i in range(6) if free(i)]
+                if not open_seats:
+                    raise SeatTaken("All seats taken")
+                seat = open_seats[0]
+            elif not free(seat):
+                raise SeatTaken(f"Seat {seat} already taken")
+
+            token = token or secrets.token_urlsafe(16)
+            changed = [seat]
+            for i in range(6):          # one seat per player: moving frees the old one
+                if i != seat and self._owners[i] == token:
+                    self._owners[i] = None
+                    self.names[i] = ""
+                    changed.append(i)
+            self._owners[seat] = token
+            self.names[seat] = clean_name(name)
+            self._left_at[seat] = now
+        for i in changed:
+            self.announce_seat(i)
+        return seat, token
+
+    def release_seat(self, seat: int) -> None:
+        """The seat's player left the table for good: free it at once."""
+        with self._seat_lock:
+            self._owners[seat] = None
+            self.names[seat] = ""
+        self.announce_seat(seat)
+
+    def owns(self, seat: int, token: Optional[str]) -> bool:
+        """True if `token` is the one issued for this seat."""
+        owner = self._owners[seat]
+        return owner is not None and token is not None and secrets.compare_digest(owner, token)
+
+    def seat_attended(self, seat: int) -> None:
+        """A human connected to or dropped from a seat."""
+        now = time.monotonic()
+        self._left_at[seat] = now
+        self._last_attended = now
+
+    # ── closing a table nobody is at ──────────────────────────────────────────
+
+    def unattended_for(self) -> float:
+        """Seconds since a player or spectator was last connected (0 while one is)."""
+        if self._has_human_players() or self._has_spectators():
+            return 0.0
+        return time.monotonic() - self._last_attended
+
+    def should_stop(self) -> bool:
+        """True once the table is closed, or has been unattended for longer
+        than the hosted idle limit (which closes it)."""
+        limit = hosting.settings.idle_room_s
+        if not self._closed and limit and self.unattended_for() > limit:
+            self.close()
+        return self._closed
+
+    def close(self) -> None:
+        """End the game; the game thread stops at its next decision."""
+        self._closed = True
+        self.status = "done"
+        self._continue_event.set()
+
     def room_state_msg(self, pov_seat: int) -> dict:
         seats_info = []
         for i, s in enumerate(self.seats):
-            entry: dict = {"seat": i, "mode": "human" if s.is_human else "ai",
-                           "you": i == pov_seat}
+            entry: dict = {**self.seat_info(i), "you": i == pov_seat}
             if self.config is not None:
                 entry["tier"] = self.config.seats[i].tier
                 entry["personality"] = self.config.seats[i].personality
@@ -315,11 +450,13 @@ class GameRoom:
         """Register a spectator WebSocket connection."""
         with self._spectator_lock:
             self._spectators.append((ws, loop))
+        self._last_attended = time.monotonic()
 
     def detach_spectator(self, ws) -> None:
         """Remove a spectator connection."""
         with self._spectator_lock:
             self._spectators = [(w, l) for w, l in self._spectators if w is not ws]
+        self._last_attended = time.monotonic()
 
     def _spectator_send(self, data: dict) -> None:
         """Send data to all connected spectators (thread-safe)."""
@@ -398,6 +535,8 @@ class GameRoom:
         try:
             GameSession(self.seats, self._renderer,  # type: ignore[arg-type]
                         continue_cb=self._wait_for_continue).run(num_hands=num_hands)
+        except RoomClosed:
+            pass
         except Exception:
             exc = _sys.exc_info()
             try:
@@ -419,17 +558,41 @@ class GameRoom:
             raise
         finally:
             self.status = "done"
-            assert self._renderer is not None
-            replay = [ser_event(e) for e in self._renderer.events]
+            replay = self._replay()
             self.broadcast({"type": "game_over", "replay": replay})
             self._spectator_send({"type": "game_over", "replay": replay})
+
+
+    def _replay(self) -> list[dict]:
+        """Every event of the game with all hands face up, for the replay
+        viewer. That is several MB per player, and a hosted server has no
+        replay viewer, so there it is left out."""
+        assert self._renderer is not None
+        if hosting.settings.hosted:
+            return []
+        return [ser_event(e) for e in self._renderer.events]
 
 
 class RoomManager:
     def __init__(self):
         self._rooms: dict[str, GameRoom] = {}
 
+    def sweep(self) -> None:
+        """Forget tables that are finished or have sat unattended past the
+        hosted idle limit, once nobody is connected to them."""
+        for code, room in list(self._rooms.items()):
+            if room.should_stop() or room.status == "done":
+                if room.unattended_for() > 0:
+                    self._rooms.pop(code, None)
+
+    def open_rooms(self) -> list[GameRoom]:
+        return [r for r in self._rooms.values() if r.status != "done"]
+
     def create(self, ai_tier: str = "search", debug: bool = False) -> GameRoom:
+        self.sweep()
+        limit = hosting.settings.max_rooms
+        if limit and len(self.open_rooms()) >= limit:
+            raise RoomLimit(f"At most {limit} tables can be open at once")
         code = self._fresh_code()
         room = GameRoom(code, ai_tier=ai_tier, debug=debug)
         self._rooms[code] = room

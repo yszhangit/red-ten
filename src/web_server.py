@@ -15,20 +15,26 @@ Routes:
     POST /api/room/join/{code}  → join room, claim a seat
     POST /api/debug-flag/{code} → append a debug flag marker to debug_logs/
     WS   /ws/{room}/{seat}      → live game WebSocket
+    GET  /login, POST /api/login → shared-passcode login (hosted mode)
+
+With REDTEN_HOSTED=1 only the 6-seat game is served, behind a passcode; see
+hosting.py and docs/hosting.md.
 """
 from __future__ import annotations
 import sys, os, random, re, glob, asyncio, argparse
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "agents"))
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from pydantic import BaseModel
+import hosting
 from serializers import ser_event, ser_event_pov
-from room_manager import RoomManager, SeatConfig, BattleConfig
+from room_manager import (RoomManager, SeatConfig, BattleConfig, SeatTaken, RoomLimit,
+                          MAX_NAME_LEN)
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -42,11 +48,51 @@ rooms = RoomManager()
 app.mount("/src", StaticFiles(directory=os.path.join(WEB_DIR, "src")), name="src")
 
 
+# ── Hosted mode: passcode gate ────────────────────────────────────────────────
+
+@app.middleware("http")
+async def hosted_gate(request: Request, call_next):
+    verdict = hosting.http_gate(request.url.path, request.cookies)
+    if verdict == "ok":
+        return await call_next(request)
+    if verdict == "login":
+        return RedirectResponse("/login", status_code=303)
+    if verdict == "unauthorized":
+        return JSONResponse({"detail": "Passcode required"}, status_code=401)
+    return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+
+class LoginReq(BaseModel):
+    passcode: str = ""
+
+_login_lock = asyncio.Lock()
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse(os.path.join(WEB_DIR, "login.html"))
+
+
+@app.post("/api/login")
+async def login(req: LoginReq, request: Request):
+    if not hosting.passcode_ok(req.passcode):
+        async with _login_lock:    # one wrong guess a second, however many try at once
+            await asyncio.sleep(1.0)
+        raise HTTPException(status_code=401, detail="Wrong passcode")
+    resp = JSONResponse({"ok": True})
+    if hosting.settings.hosted:
+        resp.set_cookie(hosting.COOKIE, hosting.auth_token(hosting.settings.passcode),
+                        max_age=hosting.COOKIE_MAX_AGE_S, httponly=True, samesite="lax",
+                        secure=request.url.scheme == "https")
+    return resp
+
+
 # ── Static pages ──────────────────────────────────────────────────────────────
 
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(WEB_DIR, "index.html"))
+    page = "play.html" if hosting.settings.hosted else "index.html"
+    return FileResponse(os.path.join(WEB_DIR, page))
 
 
 @app.get("/dashboard")
@@ -116,9 +162,20 @@ class CreateRoomReq(BaseModel):
 
 class JoinRoomReq(BaseModel):
     seat: int = -1
+    name: str = ""
+    token: str | None = None   # the token from an earlier join, to keep or move a seat
+
+@app.get("/api/lobby")
+def lobby_config():
+    """What the lobby may offer on this server."""
+    s = hosting.settings
+    return {"hosted": s.hosted, "tiers": list(s.tiers) or None,
+            "debug": not s.hosted, "max_name": MAX_NAME_LEN}
+
 
 @app.get("/api/rooms")
 def list_rooms():
+    rooms.sweep()
     result = []
     for room in rooms._rooms.values():
         if room.status == "done":
@@ -140,7 +197,14 @@ def list_rooms():
 
 @app.post("/api/room/create")
 def create_room(req: CreateRoomReq):
-    room = rooms.create(ai_tier=req.ai_tier, debug=req.debug)
+    if not hosting.tier_allowed(req.ai_tier):
+        raise HTTPException(status_code=400,
+                            detail=f"AI tier '{req.ai_tier}' is not available on this server")
+    try:
+        room = rooms.create(ai_tier=req.ai_tier,
+                            debug=req.debug and not hosting.settings.hosted)
+    except RoomLimit as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return {"room_code": room.room_code}
 
 
@@ -152,19 +216,16 @@ def join_room(code: str, req: JoinRoomReq):
     if room.status == "done":
         raise HTTPException(status_code=410, detail="Game already finished")
 
-    seat = req.seat
-    if seat == -1:
-        free = [i for i, s in enumerate(room.seats) if not s.is_human]
-        if not free:
-            raise HTTPException(status_code=409, detail="All seats taken")
-        seat = free[0]
-    elif room.seats[seat].is_human:
-        raise HTTPException(status_code=409, detail=f"Seat {seat} already taken")
+    if not -1 <= req.seat <= 5:
+        raise HTTPException(status_code=400, detail="Seat must be 0-5, or -1 for any")
+    try:
+        seat, token = room.claim_seat(req.seat, name=req.name, token=req.token)
+    except SeatTaken as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
-    return {"room_code": room.room_code, "seat": seat,
+    return {"room_code": room.room_code, "seat": seat, "token": token,
             "status": room.status,
-            "seats": [{"seat": i, "mode": "human" if s.is_human else "ai"}
-                      for i, s in enumerate(room.seats)]}
+            "seats": room.seats_info()}
 
 
 # ── AI battle / spectator ────────────────────────────────────────────────────
@@ -202,6 +263,9 @@ def get_tiers():
 
 @app.websocket("/ws/{room_code}/spectate")
 async def ws_spectate(websocket: WebSocket, room_code: str):
+    if hosting.settings.hosted:        # spectators see every hand
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
 
     room = rooms.get(room_code)
@@ -232,8 +296,7 @@ async def ws_spectate(websocket: WebSocket, room_code: str):
                 num_hands = max(1, min(20, int(data.get("hands", room.config.num_hands if room.config else 6))))
                 if room.status == "lobby":
                     room.start(num_hands=num_hands)
-                    seats_info = [{"seat": i, "mode": "human" if s.is_human else "ai"}
-                                  for i, s in enumerate(room.seats)]
+                    seats_info = room.seats_info()
                     room.broadcast({"type": "game_started", "seats": seats_info})
                     room._spectator_send({"type": "game_started", "seats": seats_info})
 
@@ -255,16 +318,26 @@ def debug_flag(code: str, note: str = Query(default=None)):
 # ── Multiplayer WebSocket ──────────────────────────────────────────────────────
 
 @app.websocket("/ws/{room_code}/{seat}")
-async def ws_game(websocket: WebSocket, room_code: str, seat: int):
+async def ws_game(websocket: WebSocket, room_code: str, seat: int, token: str = ""):
+    if not hosting.is_authed(websocket.cookies):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
 
     room = rooms.get(room_code)
     if not room or not (0 <= seat <= 5):
-        await websocket.send_json({"type": "error", "msg": "Room not found"})
+        await websocket.send_json({"type": "error", "code": "no_room",
+                                   "msg": "Room not found"})
         await websocket.close(code=1008)
         return
 
     seat_ctrl = room.seats[seat]
+    if not room.owns(seat, token):
+        # The seat was never joined, or has passed to someone else.
+        await websocket.send_json({"type": "error", "code": "not_your_seat",
+                                   "msg": "Join the room to take a seat"})
+        await websocket.close(code=1008)
+        return
     if seat_ctrl.is_human:
         await websocket.send_json({"type": "error", "msg": "Seat taken"})
         await websocket.close(code=1008)
@@ -276,8 +349,7 @@ async def ws_game(websocket: WebSocket, room_code: str, seat: int):
     await websocket.send_json(room.room_state_msg(seat))
 
     # Notify all others that a human joined this seat.
-    room.broadcast({"type": "seat_update", "seat": seat, "mode": "human"},
-                   only_seat=None)
+    room.announce_seat(seat)
 
     # If game already running, send personalized replay so joiner can catch up.
     if room.status == "running" and room._renderer:
@@ -298,9 +370,7 @@ async def ws_game(websocket: WebSocket, room_code: str, seat: int):
                 num_hands = max(1, min(10, int(data.get("hands", 3))))
                 if room.status == "lobby":
                     room.start(num_hands=num_hands)
-                    room.broadcast({"type": "game_started",
-                                    "seats": [{"seat": i, "mode": "human" if s.is_human else "ai"}
-                                              for i, s in enumerate(room.seats)]})
+                    room.broadcast({"type": "game_started", "seats": room.seats_info()})
 
             elif msg_type == "move":
                 move_idx = data.get("move_idx")
@@ -310,9 +380,13 @@ async def ws_game(websocket: WebSocket, room_code: str, seat: int):
             elif msg_type == "continue_hand":
                 room.signal_continue()
 
+            elif msg_type == "leave":
+                # Leaving for good, not a dropped connection: do not hold the seat.
+                room.release_seat(seat)
+
     except WebSocketDisconnect:
         seat_ctrl.detach()
-        room.broadcast({"type": "seat_update", "seat": seat, "mode": "ai"})
+        room.announce_seat(seat)
 
 
 # ── Training log parser ────────────────────────────────────────────────────────
@@ -412,13 +486,20 @@ def _parse_training_log(log_path: str) -> dict:
 if __name__ == "__main__":
     import uvicorn
     ap = argparse.ArgumentParser()
-    ap.add_argument("--port", type=int, default=5173)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("REDTEN_PORT", "5173")))
+    ap.add_argument("--host", default=os.environ.get("REDTEN_HOST", "0.0.0.0"),
+                    help="address to listen on; 127.0.0.1 when a reverse proxy is in front")
     ap.add_argument("--llm-debug", action="store_true",
                     help="log every LLM request and the raw response from the model server")
     args = ap.parse_args()
     if args.llm_debug:
         from llm_client import set_debug
         set_debug(True)
+    problem = hosting.startup_error()
+    if problem:
+        sys.exit(problem)
     print(f"Red Ten web UI → http://localhost:{args.port}/")
     print(f"Multiplayer    → http://localhost:{args.port}/play")
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    if hosting.settings.hosted:
+        print("Hosted mode: 6-seat game only, passcode required")
+    uvicorn.run(app, host=args.host, port=args.port)

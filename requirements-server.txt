@@ -1,0 +1,8 @@
+# Everything the hosted game server needs (REDTEN_HOSTED=1, see docs/hosting.md).
+# The engine and the rule/search AIs use the standard library only; torch and
+# numpy are needed just by the ML, multi-agent and training code, which a hosted
+# server does not offer.
+fastapi
+uvicorn
+websockets
+pydantic

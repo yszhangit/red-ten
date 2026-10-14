@@ -286,6 +286,43 @@ checking in a browser.
 
 ---
 
+## Test Case 9: Any connection could take any seat
+
+**Date**: 2026-10-13
+**Files**: `src/room_manager.py`, `src/web_server.py`, `web/src/lib/session.js`, `web/src/pages/play.js`
+**Reported by**: code review before hosting the game online
+
+### Bug Description
+
+The game WebSocket (`/ws/{room}/{seat}`) accepted any connection to any seat that had no
+human on it, with no join call, including in the middle of a game. A player whose
+connection dropped for a moment lost their seat, and their cards, to whoever connected to
+that address next. Separately, `POST /api/room/join/{code}` with a seat number outside 0–5
+crashed with a 500, and a negative number silently picked a seat counted from the end.
+
+### Root Cause
+
+A seat was only ever "human connected" or "AI"; nothing recorded who had joined it. The
+join route indexed `room.seats[seat]` without checking the number.
+
+### Fix
+
+`GameRoom.claim_seat()` gives the player who joins a seat a random token and remembers
+it; the WebSocket must present that token. A dropped player's seat is played by the AI
+and held for them for `seat_hold_s` (60 s); after that it is free. The client keeps the
+token in `sessionStorage`, so each tab is its own player and a reload keeps the seat.
+The join route rejects seat numbers outside −1…5 with a 400.
+
+### Test Coverage
+
+`tests/test_hosting.py`: `test_websocket_refuses_a_seat_nobody_joined`,
+`test_websocket_needs_the_seat_token`, `test_a_dropped_player_gets_their_seat_back`,
+`test_a_claimed_seat_is_held_for_its_player`, `test_two_tabs_get_two_seats`,
+`test_join_route_validates_the_seat_number`. Also checked in a real browser (two tabs at
+one table, moving seats, reload); that check is not automated.
+
+---
+
 ## Running Tests
 
 ```bash

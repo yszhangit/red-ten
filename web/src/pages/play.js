@@ -1,5 +1,6 @@
 // play.js — Orchestrator: wires lobby, room, game screens + WebSocket
-import { initLobby, activateLobby, deactivateLobby } from '/src/pages/lobby.js';
+import { initLobby, activateLobby, deactivateLobby, showLobbyError } from '/src/pages/lobby.js';
+import { joinRoom, savedSeat, clearSeat } from '/src/lib/session.js';
 import { initRoom, updateSeats, setRoomCode, setStatus } from '/src/pages/room.js';
 import * as game from '/src/pages/game.js';
 
@@ -8,6 +9,7 @@ import * as game from '/src/pages/game.js';
 // ═══════════════════════════════════════════════════════════════════════════
 let myRoom = null;
 let mySeat = -1;
+let myToken = '';        // issued by the server when this tab took its seat
 let roomSeats = [];
 let roomDebug = false;   // debug room: AI hands and LLM reasoning are shown
 
@@ -20,7 +22,8 @@ function connectWS() {
   if (ws && ws.readyState !== WebSocket.CLOSED) return;
   if (!myRoom) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws/${myRoom}/${mySeat}`);
+  ws = new WebSocket(`${proto}://${location.host}/ws/${myRoom}/${mySeat}`
+                     + `?token=${encodeURIComponent(myToken)}`);
 
   ws.onopen = () => {
     badge('ok');
@@ -97,8 +100,12 @@ function handleMsg(msg) {
       break;
 
     case 'seat_update':
-      if (roomSeats[msg.seat]) roomSeats[msg.seat].mode = msg.mode;
+      if (roomSeats[msg.seat]) {
+        roomSeats[msg.seat].mode = msg.mode;
+        roomSeats[msg.seat].name = msg.name || '';
+      }
       updateSeats(roomSeats, mySeat);
+      game.onSeatsChanged();
       break;
 
     case 'game_started':
@@ -162,6 +169,7 @@ function handleMsg(msg) {
       break;
 
     case 'game_over':
+      clearSeat();           // a reload now goes to the lobby, not back to this table
       game.handleGameOver(msg.replay);
       break;
 
@@ -171,27 +179,47 @@ function handleMsg(msg) {
 
     case 'error':
       console.warn('Server error:', msg.msg);
+      if (msg.code === 'not_your_seat' || msg.code === 'no_room') leaveTable(msg.code);
       break;
   }
+}
+
+// Leave the table on purpose: give the seat up now, not after the hold for
+// dropped connections.
+function leaveRoom() {
+  sendWS({ type: 'leave' });
+  clearSeat();
+  closeWS();
+  showScreen('lobby-screen');
+}
+
+// The seat is gone (held too long by a dropped connection and taken, or the
+// server restarted): stop reconnecting and go back to the lobby.
+function leaveTable(why) {
+  clearSeat();
+  closeWS();
+  showScreen('lobby-screen');
+  showLobbyError(why === 'no_room' ? '牌桌已经结束 This table has ended'
+                                   : '座位已被别人接手 Your seat was taken over');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Seat claim (called from room.js callback)
 // ═══════════════════════════════════════════════════════════════════════════
 async function claimSeat(seat) {
+  let joined;
+  try {
+    joined = await joinRoom(myRoom, seat);     // moves this tab's seat
+  } catch (e) { alert(e.message); return; }
   if (ws) {
-    ws.close();
+    const old = ws;
     ws = null;
+    old.onclose = null;                        // no reconnect to the old seat
+    old.close();
   }
-  const r = await fetch(`/api/room/join/${myRoom}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ seat }),
-  });
-  const d = await r.json();
-  if (!r.ok) { alert(d.detail); return; }
-  mySeat = d.seat;
-  roomSeats = d.seats;
+  mySeat = joined.seat;
+  myToken = joined.token;
+  roomSeats = joined.seats;
   updateSeats(roomSeats, mySeat);
   connectWS();
 }
@@ -252,7 +280,14 @@ function setupDebugButton() {
 function setupActionButtons() {
   document.getElementById('pass-btn')?.addEventListener('click', () => game.playPass());
   document.getElementById('play-btn')?.addEventListener('click', () => game.playSelected());
-  document.getElementById('gob-new-btn')?.addEventListener('click', () => location.reload());
+  document.getElementById('leave-btn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    leaveRoom();
+  });
+  document.getElementById('gob-new-btn')?.addEventListener('click', () => {
+    clearSeat();
+    location.reload();
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -270,10 +305,11 @@ function init() {
   setupDebugButton();
   setupActionButtons();
 
-  // Initialize lobby with callback that fires when player joins a room
-  initLobby(({ roomCode, seat, seats }) => {
+  // Called when this tab has a seat: joined from the lobby, or restored on reload
+  const enterRoom = ({ roomCode, seat, token, seats }) => {
     myRoom = roomCode;
     mySeat = seat;
+    myToken = token;
     roomSeats = seats;
 
     // Initialize room screen
@@ -287,7 +323,15 @@ function init() {
 
     showScreen('room-screen');
     connectWS();
-  });
+  };
+
+  initLobby(enterRoom);
+
+  // A reload keeps the seat: rejoin with the token this tab was given.
+  const saved = savedSeat();
+  if (saved) {
+    joinRoom(saved.room, saved.seat).then(enterRoom).catch(() => clearSeat());
+  }
 }
 
 // Kick off

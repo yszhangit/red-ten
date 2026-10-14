@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>红十 Red Ten Poker — 登录</title>
+<link rel="stylesheet" href="/src/styles/tokens.css">
+<link rel="stylesheet" href="/src/styles/components.css">
+</head>
+<body>
+
+<div class="screen active">
+  <form id="lobby-box" autocomplete="off">
+    <h1>红十 Red Ten Poker</h1>
+    <div class="lfield">
+      <label for="passcode">口令 Passcode</label>
+      <input id="passcode" type="password" autofocus>
+    </div>
+    <button id="login-btn" class="lbtn" type="submit">进入 Enter</button>
+    <div id="lobby-err"></div>
+  </form>
+</div>
+
+<script type="module" src="/src/pages/login.js"></script>
+</body>
+</html>

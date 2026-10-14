@@ -28,6 +28,10 @@ window._speech = speech;
   <div id="lobby-box">
     <h1>红十 Red Ten Poker</h1>
     <div class="lfield">
+      <label for="player-name">你的名字 Your name</label>
+      <input id="player-name" type="text" maxlength="12" placeholder="例如：老王">
+    </div>
+    <div class="lfield">
       <label>AI difficulty for empty seats</label>
       <select id="ai-tier">
         <option value="rule">Rule-Based (fast)</option>
@@ -36,7 +40,7 @@ window._speech = speech;
         <option value="llm">LLM AI (本地大模型, slow)</option>
       </select>
     </div>
-    <div class="lfield">
+    <div class="lfield" id="ai-debug-field">
       <label class="lcheck"><input type="checkbox" id="ai-debug">
         Debug mode — show AI hands and what the LLM was thinking</label>
     </div>
@@ -48,7 +52,7 @@ window._speech = speech;
       <button id="join-btn">Join →</button>
     </div>
     <div id="lobby-err"></div>
-    <div class="lobby-footer">
+    <div class="lobby-footer" id="lobby-footer">
       <a href="/" class="lobby-footer-link">← Watch AI replay viewer</a>
     </div>
   </div>
@@ -63,6 +67,9 @@ window._speech = speech;
     <div id="seat-grid"></div>
     <button id="start-btn">▶ Start Game</button>
     <div id="room-status-msg">Waiting for players…</div>
+    <div class="lobby-footer">
+      <a href="#" id="leave-btn" class="lobby-footer-link">← 离开牌桌 Leave table</a>
+    </div>
   </div>
 </div>
 

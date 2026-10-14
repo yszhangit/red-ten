@@ -24,6 +24,18 @@ let pinnedThoughtSeat = null; // seat whose thought panel was clicked open
 
 const CCW_ORDER = [0, 5, 4, 3, 2, 1];  // seats in P1→P6 display order
 
+// "P3 老王" when the seat's player gave a name, otherwise "P3". Names are typed
+// by players: pass them through esc() wherever HTML is built from strings.
+function seatName(p) {
+  const name = (roomSeats[p] && roomSeats[p].name) || '';
+  return name ? `${pLabel(p)} ${name}` : pLabel(p);
+}
+
+// A player sat down, left or changed seats: redraw the names.
+export function onSeatsChanged() {
+  if (gameSnap) renderGame();
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Seat positioning constants
 // ═══════════════════════════════════════════════════════════════════════════
@@ -115,7 +127,7 @@ export function populatePreGameSeats() {
     const info = roomSeats[p] || { seat: p, mode: 'ai' };
     const isHuman = info.mode === 'human';
     const isMe = p === mySeat;
-    document.getElementById('gsname-' + p).textContent = pLabel(p) + (isMe ? ' (You)' : '');
+    document.getElementById('gsname-' + p).textContent = seatName(p) + (isMe ? ' (You)' : '');
     document.getElementById('gsbadge-' + p).textContent = isHuman ? '\u{1F464}' : '\u{1F916}';
     document.getElementById('gsc-hand-' + p).textContent = 'hand 0';
     document.getElementById('gsc-cum-' + p).textContent = 'total 0';
@@ -134,7 +146,7 @@ export function showPreGameOverlay() {
     const isHuman = info.mode === 'human';
     const isMe = p === mySeat;
     const icon = isHuman ? '\u{1F464}' : '\u{1F916}';
-    const name = pLabel(p) + (isMe ? ' (You)' : '');
+    const name = esc(seatName(p)) + (isMe ? ' (You)' : '');
     html += '<div style="margin:2px 0;">' + icon + ' ' + name + ' — Score: 0</div>';
   }
   document.getElementById('pgo-players').innerHTML = html;
@@ -344,7 +356,7 @@ export function renderGame() {
     // Name
     const nameEl = document.getElementById('gsname-' + p);
     const badgeEl = document.getElementById('gsbadge-' + p);
-    let name = p === mySeat ? `${pLabel(p)} (You)` : pLabel(p);
+    let name = p === mySeat ? `${seatName(p)} (You)` : seatName(p);
     if (snap.fin[p]) {
       const pos = snap.fo.indexOf(p);
       name += pos === 0 ? ' 大贡' : ` #${pos+1}`;
@@ -443,7 +455,7 @@ export function renderGame() {
     const fin = snap.fin[p] ? ' ✓' : '';
     const you = p === mySeat ? ' (You)' : '';
     sh += `<div class="row" style="color:${col}">
-      <span class="pname">${pLabel(p)}${fin}${you}</span>
+      <span class="pname">${esc(seatName(p))}${fin}${you}</span>
       <span class="pts">${snap.ts[p]}</span>
       <span class="pts">${snap.cs[p]}</span>
     </div>`;
@@ -790,7 +802,7 @@ function showHandEndOverlay(result, snap) {
     const isMe = p === mySeat;
     const isRed = result.red && result.red.includes(p);
     const icon = isHuman ? '\u{1F464}' : '\u{1F916}';
-    const name = pLabel(p) + (isMe ? ' (You)' : '');
+    const name = esc(seatName(p)) + (isMe ? ' (You)' : '');
     const col = isRed ? '#dc4848' : '#589bdc';
 
     let tag = '';
@@ -842,8 +854,10 @@ export async function flagDebugMoment() {
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
     const msg = `room ${_myRoom}, flag ${d.flag_id}, check debug_logs/${d.log_file}`;
-    try { await navigator.clipboard.writeText(msg); } catch (_) {}
-    showDebugToast(`Flag ${d.flag_id} inserted — copied to clipboard`);
+    // The clipboard is only available over HTTPS or on localhost.
+    let copied = false;
+    try { await navigator.clipboard.writeText(msg); copied = true; } catch (_) {}
+    showDebugToast(copied ? `Flag ${d.flag_id} inserted — copied to clipboard` : msg);
   } catch (e) {
     showDebugToast('Flag failed: ' + e.message);
   } finally {

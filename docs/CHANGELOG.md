@@ -2,6 +2,37 @@
 
 ---
 
+## 2026-10-13
+
+### 联网模式：和朋友在各自电脑上打牌
+
+**文件**: `src/hosting.py`（新）, `src/web_server.py`, `src/room_manager.py`, `web/login.html`（新）, `web/src/pages/login.js`（新）, `web/src/lib/session.js`（新）, `web/play.html`, `web/src/pages/{lobby,play,room,game}.js`, `requirements-server.txt`（新）, `deploy/`（新）, `docs/hosting.md`（新）, `tests/test_hosting.py`（新）
+
+**功能**: 设置环境变量 `REDTEN_HOSTED=1` 后，服务器可以放到公网上给一桌朋友用。不设置时，在自己电脑上运行和以前完全一样。
+- 只开放 6 人对局：大厅直接在 `/`。训练、回看、AI 对战、观战在联网模式下一律关闭（观战能看到所有人的手牌）。
+- 进入需要口令：所有人共用一个口令（`REDTEN_PASSCODE`），每个浏览器输入一次即可。没有设置口令时服务器拒绝启动。
+- 空座位只由规则 AI 或搜索 AI 补位，不需要 torch 和模型文件，服务器只装 4 个 Python 包（`requirements-server.txt`）。
+- 最多同时开 3 桌；一桌没有任何人连接超过 10 分钟就自动关闭，AI 不会自己打下去。
+- 联网模式下牌局结束时不再给每位玩家发送整局的明牌回放（每人数 MB，联网模式也没有回看页面）。
+- 部署：`deploy/install.sh` 在一台 Ubuntu 服务器上完成全部安装；`deploy/terraform/` 在 AWS Lightsail 上创建服务器。步骤见 `docs/hosting.md`。目前按 IP 地址用 http 访问，没有 https。
+
+### 座位归坐下的人所有，玩家可以填名字
+
+**文件**: `src/room_manager.py`, `src/web_server.py`, `web/src/lib/session.js`, `web/src/pages/{lobby,play,room,game}.js`, `web/play.html`
+
+**问题**: 以前任何连接都能直接坐进任何没有真人的座位，对局中也可以；玩家网络一断，座位和手牌就可能被下一个连上来的人接走。座位号超出 0–5 时加入房间会报 500 错误。
+
+**修复 / 功能**（联网和本机都生效）:
+- 加入座位时服务器发给这个浏览器标签页一个凭证，对局连接必须带上它。刷新页面或掉线重连会回到原来的座位。
+- 掉线期间仍由 AI 代打，座位为原玩家保留 60 秒，之后别人才能坐。
+- 因为刷新页面不再离开牌桌，房间页面新增"离开牌桌"链接，点击后座位立即空出。
+- 一个标签页一个座位：同一台电脑开几个标签页或窗口，可以各占一个座位。
+- 大厅新增"你的名字"，名字显示在房间座位和牌桌上（如 `P1 老王`），最长 12 个字。
+- 座位号不合法时返回 400。
+- 🚩 Flag 按钮在不能写剪贴板时（http 访问），直接把引用文字显示在屏幕上。
+
+---
+
 ## 2026-10-11
 
 ### LLM AI 座位（本地大模型出牌）

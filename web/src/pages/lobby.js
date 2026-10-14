@@ -1,5 +1,6 @@
 // lobby.js — Lobby screen: room list, create, join
 import { get } from '/src/lib/api.js';
+import { joinRoom, playerName, setPlayerName } from '/src/lib/session.js';
 
 let _onJoinRoom = null;
 let _refreshTimer = null;
@@ -8,6 +9,13 @@ const tierName = { rule: 'Rule AI', search: 'Search AI', ml: 'ML AI', llm: 'LLM 
 
 export function initLobby(onJoinRoom) {
   _onJoinRoom = onJoinRoom;
+
+  // Display name, remembered for next time
+  const nameEl = document.getElementById('player-name');
+  nameEl.value = playerName();
+  nameEl.addEventListener('input', () => setPlayerName(nameEl.value.trim()));
+
+  applyServerConfig();
 
   // Wire up create button
   document.getElementById('create-btn')?.addEventListener('click', createGame);
@@ -40,9 +48,29 @@ export function deactivateLobby() {
   _refreshTimer = null;
 }
 
+// Offer only what this server offers: a hosted server (src/hosting.py) has
+// the engine AIs and nothing but the game.
+async function applyServerConfig() {
+  let cfg;
+  try { cfg = await get('/api/lobby'); } catch (_) { return; }
+  if (cfg.tiers) {
+    const sel = document.getElementById('ai-tier');
+    [...sel.options].forEach(o => { if (!cfg.tiers.includes(o.value)) o.remove(); });
+    if (!cfg.tiers.includes(sel.value)) sel.value = cfg.tiers[cfg.tiers.length - 1];
+  }
+  if (!cfg.debug) document.getElementById('ai-debug-field').style.display = 'none';
+  if (cfg.hosted) {
+    document.getElementById('lobby-footer').style.display = 'none';
+    document.getElementById('review-link').style.display = 'none';
+  }
+}
+
 async function refreshRoomList() {
   try {
-    const list = await get('/api/rooms');
+    const r = await fetch('/api/rooms');
+    if (r.status === 401) { window.location.href = '/login'; return; }
+    if (!r.ok) return;
+    const list = await r.json();
     const el = document.getElementById('room-list');
     if (!list.length) {
       el.innerHTML = '<div class="no-rooms">No open rooms yet — create one above.</div>';
@@ -86,6 +114,7 @@ async function createGame() {
       body: JSON.stringify({ ai_tier: tier,
                              debug: document.getElementById('ai-debug').checked }),
     });
+    if (r.status === 401) { window.location.href = '/login'; return; }
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
     await enterRoom(d.room_code, -1);
@@ -107,18 +136,10 @@ async function joinGame() {
 }
 
 async function enterRoom(code, preferSeat) {
-  const r = await fetch(`/api/room/join/${code}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ seat: preferSeat }),
-  });
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.detail || r.statusText);
-  if (_onJoinRoom) {
-    _onJoinRoom({
-      roomCode: d.room_code,
-      seat: d.seat,
-      seats: d.seats,
-    });
-  }
+  const joined = await joinRoom(code, preferSeat);
+  if (_onJoinRoom) _onJoinRoom(joined);
+}
+
+export function showLobbyError(msg) {
+  document.getElementById('lobby-err').textContent = msg;
 }
