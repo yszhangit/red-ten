@@ -195,3 +195,68 @@ no instances and no static IPs.
 - **The passcode is stored in three places on your machine and AWS:** `terraform.tfvars`,
   the Terraform state file, and the instance's launch script. All stay out of git.
 - **One server, in memory.** A restart ends the games in progress.
+
+## Optional extras and what they cost
+
+Not set up today. This is the price check for deciding whether to add a name and HTTPS;
+the choice is Mr. Liu's. Prices were looked up in October 2026 and move: confirm in the
+console before buying. Items marked *unverified* are from memory, not from an AWS page.
+
+| Extra | Lightsail's price | What this server would need | Realistic cost |
+|---|---|---|---|
+| A name instead of a bare address | DNS zones are free: up to 6 zones and 3 million queries a month, then $0.40 per million | One record pointing a name at the static IP | $0 for DNS; the domain name is the cost (below) |
+| HTTPS certificate | Free, but only on a load balancer ($18/month) or a CDN distribution ($2.50/month for 50 GB), never on the instance itself | A Let's Encrypt certificate fetched on the server by Caddy | $0 |
+| Snapshot (backup of the disk) | $0.05 per GB per month; after the first, only what changed | Probably none | About $0.15–$1 a month if taken |
+
+### A name
+
+- **Dynamic DNS is not needed.** The static IP never changes, so an ordinary DNS record is
+  enough. Lightsail has no dynamic-DNS product.
+- **Buying a domain from AWS.** Route 53 is a registrar for a few hundred endings, and
+  the Lightsail console sells the same ones at the same prices. `.com` was $15 a year in
+  July 2026 (`.org` $15, `.net` $17), after a price rise on 2026-07-01 that touched about
+  267 endings. The cheapest endings, `.click` and `.link`, used to be about $3 and $5 a
+  year (*unverified*, and from before that rise). The current list is the PDF linked from
+  the Route 53 pricing page, "View a full list of current pricing by TLD".
+- **Amazon's own endings** such as `.aws` are reserved for Amazon and not for sale
+  (*unverified*).
+- **Hidden extra.** Registering in the Route 53 console creates a Route 53 hosted zone at
+  $0.50 a month ($6 a year). Registering in the Lightsail console should create a free
+  Lightsail DNS zone instead (*unverified* — check which one you got).
+- **Buying elsewhere.** Any registrar works; some sell `.com` nearer $10. You add one
+  record pointing the name at the static IP.
+- **Free.** A free dynamic-DNS hostname (DuckDNS, for example) pointed once at the static
+  IP costs nothing and is enough to get a certificate.
+
+### HTTPS
+
+- Lightsail's own certificates are not worth it here: they need the $18/month load
+  balancer, or a CDN distribution. The game depends on WebSockets; AWS's documentation
+  suggests a distribution passes them through, but that has not been tried.
+- The free route is Caddy on the server, which gets and renews a Let's Encrypt
+  certificate by itself once a name points at the server. `docs/hosting.md` ("Plain HTTP:
+  what you are accepting") lists the settings to change. Port 443 must be opened in
+  `deploy/terraform/main.tf`. This is a code change that has not been made or tested.
+
+### Snapshots
+
+- The disk is 20 GB, so one full snapshot costs at most $1 a month; billing is on data
+  actually stored, probably 3–4 GB here (*unverified*). Automatic snapshots keep seven
+  daily copies at the same rate.
+- This server holds nothing worth backing up except a month of game logs, and
+  `terraform apply -replace=...` rebuilds it from scratch in about three minutes.
+- Snapshots outlive the server: `terraform destroy` does not delete ones taken by hand,
+  and they are billed until deleted in the console.
+
+### Bottom line
+
+HTTPS with a name can be $0 a year (free hostname + Caddy) or about $15 a year (your own
+`.com` + Caddy). Either way it needs the HTTPS change above first.
+
+Sources: [Lightsail pricing](https://aws.amazon.com/lightsail/pricing/) ·
+[Lightsail FAQs](https://aws.amazon.com/lightsail/faq/) ·
+[Lightsail certificates FAQ](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-faq-certificates.html) ·
+[Lightsail distributions](https://docs.aws.amazon.com/lightsail/latest/userguide/amazon-lightsail-distribution-request-and-response.html) ·
+[Route 53 pricing](https://aws.amazon.com/route53/pricing/) ·
+[Route 53 price changes, July 2026](https://dev.classmethod.jp/en/articles/route53-tld-pricing-change-2026/) ·
+[Route 53 registrar prices](https://tldes.com/registrars/amazon)
