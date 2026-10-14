@@ -1,0 +1,7 @@
+# Local Terraform state and settings: they hold the passcode.
+.terraform/
+*.tfstate
+*.tfstate.*
+terraform.tfvars
+*.auto.tfvars
+crash.log

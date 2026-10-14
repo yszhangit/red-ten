@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (which git ignores) and fill in.
+
+passcode            = "change-me-please"
+ssh_allowed_cidr    = "203.0.113.7/32" # your address: curl https://checkip.amazonaws.com
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"
+
+# region      = "us-east-1"
+# repo_branch = "hosted-play"
