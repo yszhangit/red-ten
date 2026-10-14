@@ -73,7 +73,7 @@ async function refreshRoomList() {
     const list = await r.json();
     const el = document.getElementById('room-list');
     if (!list.length) {
-      el.innerHTML = '<div class="no-rooms">No open rooms yet — create one above.</div>';
+      el.innerHTML = '<div class="no-rooms">还没有牌桌，点上面的按钮开一桌<br>No open tables yet — create one above.</div>';
       return;
     }
     el.innerHTML = list.map(room => {

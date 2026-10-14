@@ -44,8 +44,8 @@ window._speech = speech;
       <label class="lcheck"><input type="checkbox" id="ai-debug">
         Debug mode — show AI hands and what the LLM was thinking</label>
     </div>
-    <button id="create-btn" class="lbtn">＋ Create New Game</button>
-    <div class="lobby-subtext">— or join an existing game —</div>
+    <button id="create-btn" class="lbtn">＋ 开一桌 Create a table</button>
+    <div class="lobby-subtext">— 或者加入已开的牌桌 or join an open table —</div>
     <div id="room-list"></div>
     <div id="join-row">
       <input id="join-code" type="text" maxlength="4" placeholder="room code">
@@ -61,11 +61,11 @@ window._speech = speech;
 <!-- ── Room / waiting ─────────────────────────────────────────────────────── -->
 <div id="room-screen" class="screen">
   <div id="room-box">
-    <h2>Game Room</h2>
+    <h2>牌桌 Table</h2>
     <div id="room-code-display">----</div>
-    <div id="room-share">Share this code with up to 5 friends</div>
+    <div id="room-share">其他人打开同一个网址，在大厅里点这一桌的 Join<br>Others open the same address and click Join next to this code</div>
     <div id="seat-grid"></div>
-    <button id="start-btn">▶ Start Game</button>
+    <button id="start-btn">▶ 人到齐了，开始 Start Game</button>
     <div id="room-status-msg">Waiting for players…</div>
     <div class="lobby-footer">
       <a href="#" id="leave-btn" class="lobby-footer-link">← 离开牌桌 Leave table</a>
