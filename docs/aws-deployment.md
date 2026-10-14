@@ -4,9 +4,11 @@ This puts the hosted game (see `docs/hosting.md`) on one small Amazon Lightsail 
 using the Terraform config in `deploy/terraform/`. At the end you have an address like
 `http://203.0.113.20/` to give the players, together with the passcode.
 
-**Status of this procedure:** the Terraform config passes `terraform validate` and the
-install script was rehearsed locally, but nobody has run `terraform apply` with it yet.
-Step 5 is where a wrong plan or image name would show up; step 8 covers what to do.
+**Status of this procedure:** `terraform apply` has been run with this config and
+created the server (2026-10-14). On that run the first-boot install did not start,
+because Lightsail runs the launch script with plain `sh`; that is fixed, and the fixed
+script was checked locally under `sh` but not yet on a newly created server. If the game
+is not up a few minutes after `apply`, step 8 shows how to start the install by hand.
 
 ## What it creates and what it costs
 
@@ -129,7 +131,7 @@ Then give the players two things: the address and the passcode.
 | `apply`: invalid availability zone | The region's first zone is not `…a` | Set `availability_zone`, for example `"us-west-2b"` |
 | `apply`: key pair error | Key type or file not accepted | Point `ssh_public_key_path` at an RSA or ed25519 `.pub` file |
 | `apply`: not authorized | Wrong profile, or no Lightsail permission | Check `AWS_PROFILE`; add `lightsail:*` |
-| `curl` gives no answer after 5 minutes | First-boot install failed | Log in (below) and read the install log |
+| `curl` gives no answer after 5 minutes | First-boot install failed | Log in (below), read the install log, and run the install by hand |
 | Browser cannot connect, `curl` on the server works | Firewall | Check the instance's Networking tab shows port 80 open |
 
 To look inside the server:

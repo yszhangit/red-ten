@@ -21,14 +21,18 @@ provider "aws" {
 locals {
   availability_zone = coalesce(var.availability_zone, "${var.region}a")
 
-  # Runs once as root when the server first boots: settings first, then the
-  # same install script used for updates.
+  # Runs once as root when the server first boots. Lightsail puts its own
+  # lines in front of this and runs the result with plain sh, not bash, so a
+  # "#!/bin/bash" line here is ignored: the install script is written to a
+  # file and started with bash by name.
   first_boot = join("\n", [
-    "#!/bin/bash",
     "export REDTEN_PASSCODE='${var.passcode}'",
     "export REPO_URL='${var.repo_url}'",
     "export REPO_BRANCH='${var.repo_branch}'",
+    "cat > /root/redten-install.sh <<'REDTEN_INSTALL_SCRIPT'",
     file("${path.module}/../install.sh"),
+    "REDTEN_INSTALL_SCRIPT",
+    "bash /root/redten-install.sh",
   ])
 }
 
