@@ -40,6 +40,9 @@ sluggish, create tables with the Rule AI.
 
 ## Create the server
 
+`docs/aws-deployment.md` walks through this step by step, with checks and what to do
+when something fails. In short:
+
 You need an AWS account, Terraform, and an SSH key. The branch named in
 `repo_branch` must be pushed to GitHub first: the server downloads the game
 from there.

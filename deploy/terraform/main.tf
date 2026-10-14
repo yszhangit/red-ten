@@ -44,6 +44,13 @@ resource "aws_lightsail_instance" "redten" {
   bundle_id         = var.bundle_id
   key_pair_name     = aws_lightsail_key_pair.redten.name
   user_data         = local.first_boot
+
+  # The first-boot script only matters when the server is created. Without
+  # this, editing the passcode or install.sh later would make Terraform
+  # delete the server and build a new one.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 }
 
 # A fixed address, so the one Mr. Liu hands out keeps working. Free while it
