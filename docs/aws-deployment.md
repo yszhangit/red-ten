@@ -162,6 +162,15 @@ If SSH itself is refused, your address has changed since step 4. Update
 | Change the passcode | On the server: `sudo nano /etc/redten.env`, then `sudo systemctl restart redten` |
 | Restart | `sudo systemctl restart redten` |
 | Watch the log | `journalctl -u redten -f` |
+| Rebuild the server from scratch, same address | On your machine: `terraform apply -replace=aws_lightsail_instance.redten` |
+
+A rebuild deletes the server and creates a new one that installs itself again; the
+address stays, because the static IP is a separate resource. SSH will warn that the
+host key changed: run `ssh-keygen -R <address>` once.
+
+`ssh_allowed_cidr` limits SSH only; the game on port 80 is open to everyone and guarded
+by the passcode. Use your own address with `/32`. If your address changes and SSH is
+refused, update the value and run `terraform apply`; only the firewall rule changes.
 
 An update or restart ends any game in progress; do it between sessions. The passcode in
 `terraform.tfvars` is used only when the server is first created: change it on the server

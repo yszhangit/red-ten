@@ -66,6 +66,12 @@ resource "aws_lightsail_static_ip" "redten" {
 resource "aws_lightsail_static_ip_attachment" "redten" {
   static_ip_name = aws_lightsail_static_ip.redten.name
   instance_name  = aws_lightsail_instance.redten.name
+
+  # A rebuilt server keeps its name, so Terraform would not notice that the
+  # address needs attaching again.
+  lifecycle {
+    replace_triggered_by = [aws_lightsail_instance.redten]
+  }
 }
 
 # The game on port 80 for everyone; SSH only from the address you name.
@@ -84,5 +90,10 @@ resource "aws_lightsail_instance_public_ports" "redten" {
     from_port = 22
     to_port   = 22
     cidrs     = [var.ssh_allowed_cidr]
+  }
+
+  # Same reason: a rebuilt server starts with Lightsail's default firewall.
+  lifecycle {
+    replace_triggered_by = [aws_lightsail_instance.redten]
   }
 }

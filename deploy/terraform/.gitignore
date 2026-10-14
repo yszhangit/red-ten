@@ -1,5 +1,7 @@
-# Local Terraform state and settings: they hold the passcode.
+# Local Terraform state and settings (they hold the passcode), and the
+# provider lock file, which is not tracked for this one-server setup.
 .terraform/
+.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 terraform.tfvars
